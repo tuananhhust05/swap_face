@@ -68,9 +68,10 @@ os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
 active_recordings: Dict[str, Dict] = {}  # {connection_id: {video_writer, user_id, temp_path, width, height, fps}}
 
 # Dictionary để lưu stream rooms và frames buffer
-stream_rooms: Dict[str, Dict] = {}  # {room_id: {frames_buffer, last_frame, created_at, user_id, connection_id, viewers_count}}
-# frames_buffer là list các frame đã swap (giữ tối đa 30 frames để tránh memory leak)
+stream_rooms: Dict[str, Dict] = {}  # {room_id: {frames_buffer, last_frame, created_at, user_id, connection_id, viewers_count, last_update_time}}
+# frames_buffer là list các frame đã swap (giữ tối đa 10 frames để giảm memory)
 # viewers_count: số người đang xem stream
+# last_update_time: thời gian frame cuối cùng được cập nhật
 
 count = 0
 processed_frame = None
@@ -248,10 +249,11 @@ async def watch_stream(room_id: str):
     print(f"New viewer joined room {room_id}, total viewers: {room['viewers_count']}")
     
     async def generate_frames():
-        """Generator để tạo MJPEG stream"""
+        """Generator để tạo MJPEG stream - tối ưu để giảm delay"""
         frame_count = 0
         no_frame_count = 0
-        max_no_frame = 100  # Nếu không có frame trong 4 giây (100 * 40ms) thì dừng
+        max_no_frame = 150  # Nếu không có frame trong 5 giây thì dừng
+        last_sent_frame_time = 0
         
         try:
             while True:
@@ -269,15 +271,15 @@ async def watch_stream(room_id: str):
                         print(f"Room {room_id} deletion time reached, stopping stream")
                         break
                 
-                # Lấy last_frame từ room
+                # Lấy last_frame từ room - lấy trực tiếp không copy để giảm delay
                 last_frame = room_info.get("last_frame")
                 
                 if last_frame is not None:
                     try:
                         # Đảm bảo frame là numpy array hợp lệ
                         if isinstance(last_frame, np.ndarray) and last_frame.size > 0:
-                            # Encode frame thành JPEG
-                            success, buffer = cv2.imencode('.jpg', last_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            # Encode frame thành JPEG với quality thấp hơn để giảm delay (70 thay vì 85)
+                            success, buffer = cv2.imencode('.jpg', last_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                             if success and buffer is not None and buffer.size > 0:
                                 frame_bytes = buffer.tobytes()
                                 
@@ -286,6 +288,7 @@ async def watch_stream(room_id: str):
                                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
                                 frame_count += 1
                                 no_frame_count = 0  # Reset counter
+                                last_sent_frame_time = time.time()
                             else:
                                 no_frame_count += 1
                         else:
@@ -296,13 +299,13 @@ async def watch_stream(room_id: str):
                 else:
                     no_frame_count += 1
                     # Nếu chưa có frame, gửi frame đen hoặc đợi
-                    if no_frame_count < 10:  # Đợi 400ms đầu tiên
+                    if no_frame_count < 5:  # Đợi 165ms đầu tiên
                         pass
                     else:
-                        # Tạo frame đen để giữ connection
+                        # Tạo frame đen để giữ connection (chỉ khi cần)
                         try:
                             black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
-                            success, buffer = cv2.imencode('.jpg', black_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            success, buffer = cv2.imencode('.jpg', black_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
                             if success and buffer is not None:
                                 frame_bytes = buffer.tobytes()
                                 yield (b'--frame\r\n'
@@ -310,8 +313,9 @@ async def watch_stream(room_id: str):
                         except:
                             pass
                 
-                # Đợi một chút trước khi gửi frame tiếp theo (25 FPS = ~40ms)
-                await asyncio.sleep(0.04)
+                # Đợi ngắn hơn để giảm delay (30 FPS = ~33ms)
+                # Nhưng nếu frame mới vừa được gửi, đợi đủ thời gian
+                await asyncio.sleep(0.033)
                 
                 # Nếu không có frame quá lâu, có thể stream đã dừng
                 if no_frame_count > max_no_frame:
@@ -649,20 +653,29 @@ async def websocket_video(websocket: WebSocket):
                                 room_id_to_update = rid
                                 break
                     
-                    # Cập nhật frame vào room
+                    # Cập nhật frame vào room - tối ưu để giảm delay
                     if room_id_to_update and room_id_to_update in stream_rooms:
                         try:
                             room_info = stream_rooms[room_id_to_update]
-                            # Copy frame để tránh race condition
-                            frame_copy = swapped_frame.copy()
-                            room_info["last_frame"] = frame_copy
-                            
-                            # Cập nhật frames_buffer (giữ tối đa 30 frames)
-                            frames_buffer = room_info.get("frames_buffer", [])
-                            frames_buffer.append(frame_copy)
-                            if len(frames_buffer) > 30:
-                                frames_buffer.pop(0)  # Xóa frame cũ nhất
-                            room_info["frames_buffer"] = frames_buffer
+                            # Luôn cập nhật frame mới nhất ngay lập tức (không copy để giảm delay)
+                            # Chỉ copy khi có nhiều viewers để tránh race condition
+                            viewers = room_info.get("viewers_count", 0)
+                            if viewers > 1:
+                                # Nhiều viewers, cần copy để tránh race condition
+                                frame_copy = swapped_frame.copy()
+                                room_info["last_frame"] = frame_copy
+                                room_info["last_update_time"] = time.time()
+                                
+                                # Cập nhật frames_buffer (giữ tối đa 10 frames)
+                                frames_buffer = room_info.get("frames_buffer", [])
+                                frames_buffer.append(frame_copy)
+                                if len(frames_buffer) > 10:
+                                    frames_buffer.pop(0)
+                                room_info["frames_buffer"] = frames_buffer
+                            else:
+                                # 1 hoặc 0 viewers, không cần copy (giảm delay)
+                                room_info["last_frame"] = swapped_frame
+                                room_info["last_update_time"] = time.time()
                         except Exception as e:
                             print(f"Error updating frame for room {room_id_to_update}: {e}")
                     
