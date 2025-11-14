@@ -6,7 +6,7 @@ Chạy ở chế độ public trên port 5349
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 from typing import Optional, List, Dict
@@ -68,8 +68,9 @@ os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
 active_recordings: Dict[str, Dict] = {}  # {connection_id: {video_writer, user_id, temp_path, width, height, fps}}
 
 # Dictionary để lưu stream rooms và frames buffer
-stream_rooms: Dict[str, Dict] = {}  # {room_id: {frames_buffer, last_frame, created_at, user_id}}
+stream_rooms: Dict[str, Dict] = {}  # {room_id: {frames_buffer, last_frame, created_at, user_id, connection_id, viewers_count}}
 # frames_buffer là list các frame đã swap (giữ tối đa 30 frames để tránh memory leak)
+# viewers_count: số người đang xem stream
 
 count = 0
 processed_frame = None
@@ -220,29 +221,118 @@ async def watch_stream(room_id: str):
     Endpoint để xem stream video sau khi swap face
     Trả về MJPEG stream (Motion JPEG) - có thể xem bằng browser hoặc VLC
     """
+    # Kiểm tra room có tồn tại không
     if room_id not in stream_rooms:
-        raise HTTPException(status_code=404, detail="Room not found or expired")
+        # Trả về HTML với thông báo thay vì 404
+        html_content = """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Stream Not Found</title>
+            <style>
+                body { font-family: Arial; text-align: center; padding: 50px; }
+                .error { color: #ff3b30; font-size: 24px; }
+            </style>
+        </head>
+        <body>
+            <div class="error">Stream not found or expired</div>
+            <p>The stream room may have been closed or does not exist.</p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content, status_code=404)
     
+    # Tăng số lượng viewers
     room = stream_rooms[room_id]
+    room["viewers_count"] = room.get("viewers_count", 0) + 1
+    print(f"New viewer joined room {room_id}, total viewers: {room['viewers_count']}")
     
     async def generate_frames():
         """Generator để tạo MJPEG stream"""
-        while room_id in stream_rooms:
-            if room.get("last_frame"):
-                # Encode frame thành JPEG
-                _, buffer = cv2.imencode('.jpg', room["last_frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
-                frame_bytes = buffer.tobytes()
+        frame_count = 0
+        no_frame_count = 0
+        max_no_frame = 100  # Nếu không có frame trong 4 giây (100 * 40ms) thì dừng
+        
+        try:
+            while True:
+                # Kiểm tra room còn tồn tại không
+                if room_id not in stream_rooms:
+                    print(f"Room {room_id} no longer exists, stopping stream")
+                    break
                 
-                # MJPEG format: boundary + frame
-                yield (b'--frame\r\n'
-                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            
-            # Đợi một chút trước khi gửi frame tiếp theo (25 FPS = ~40ms)
-            await asyncio.sleep(0.04)
+                room_info = stream_rooms[room_id]
+                
+                # Kiểm tra room có bị đánh dấu xóa không
+                if room_info.get("marked_for_deletion"):
+                    deletion_time = room_info.get("deletion_time", 0)
+                    if time.time() > deletion_time:
+                        print(f"Room {room_id} deletion time reached, stopping stream")
+                        break
+                
+                # Lấy last_frame từ room
+                last_frame = room_info.get("last_frame")
+                
+                if last_frame is not None:
+                    try:
+                        # Đảm bảo frame là numpy array hợp lệ
+                        if isinstance(last_frame, np.ndarray) and last_frame.size > 0:
+                            # Encode frame thành JPEG
+                            success, buffer = cv2.imencode('.jpg', last_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            if success and buffer is not None and buffer.size > 0:
+                                frame_bytes = buffer.tobytes()
+                                
+                                # MJPEG format: boundary + frame
+                                yield (b'--frame\r\n'
+                                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                                frame_count += 1
+                                no_frame_count = 0  # Reset counter
+                            else:
+                                no_frame_count += 1
+                        else:
+                            no_frame_count += 1
+                    except Exception as e:
+                        print(f"Error encoding frame for room {room_id}: {e}")
+                        no_frame_count += 1
+                else:
+                    no_frame_count += 1
+                    # Nếu chưa có frame, gửi frame đen hoặc đợi
+                    if no_frame_count < 10:  # Đợi 400ms đầu tiên
+                        pass
+                    else:
+                        # Tạo frame đen để giữ connection
+                        try:
+                            black_frame = np.zeros((480, 640, 3), dtype=np.uint8)
+                            success, buffer = cv2.imencode('.jpg', black_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            if success and buffer is not None:
+                                frame_bytes = buffer.tobytes()
+                                yield (b'--frame\r\n'
+                                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                        except:
+                            pass
+                
+                # Đợi một chút trước khi gửi frame tiếp theo (25 FPS = ~40ms)
+                await asyncio.sleep(0.04)
+                
+                # Nếu không có frame quá lâu, có thể stream đã dừng
+                if no_frame_count > max_no_frame:
+                    print(f"No frames received for room {room_id} for too long, stopping stream")
+                    break
+        except Exception as e:
+            print(f"Error in generate_frames for room {room_id}: {e}")
+        finally:
+            # Giảm số lượng viewers khi disconnect
+            if room_id in stream_rooms:
+                stream_rooms[room_id]["viewers_count"] = max(0, stream_rooms[room_id].get("viewers_count", 1) - 1)
+                print(f"Viewer left room {room_id}, remaining viewers: {stream_rooms[room_id]['viewers_count']}")
     
     return StreamingResponse(
         generate_frames(),
-        media_type="multipart/x-mixed-replace; boundary=frame"
+        media_type="multipart/x-mixed-replace; boundary=frame",
+        headers={
+            "Cache-Control": "no-cache, no-store, must-revalidate",
+            "Pragma": "no-cache",
+            "Expires": "0"
+        }
     )
 
 
@@ -468,8 +558,14 @@ async def websocket_video(websocket: WebSocket):
                         "last_frame": None,
                         "created_at": datetime.now(),
                         "user_id": user_id,
-                        "connection_id": connection_id
+                        "connection_id": connection_id,
+                        "viewers_count": 0,
+                        "room_id": room_id  # Lưu room_id để dễ tìm
                     }
+                    
+                    # Lưu room_id vào active_recordings để dễ tìm
+                    if connection_id in active_recordings:
+                        active_recordings[connection_id]["room_id"] = room_id
                     
                     # Gửi room_id và watch link về client
                     await websocket.send_json({
@@ -510,6 +606,13 @@ async def websocket_video(websocket: WebSocket):
                         fourcc = cv2.VideoWriter_fourcc(*'XVID')
                         video_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
                         
+                        # Tìm room_id từ stream_rooms
+                        room_id_for_recording = None
+                        for rid, room_info in stream_rooms.items():
+                            if room_info.get("connection_id") == connection_id:
+                                room_id_for_recording = rid
+                                break
+                        
                         # Lưu thông tin recording
                         active_recordings[connection_id] = {
                             "video_writer": video_writer,
@@ -517,9 +620,10 @@ async def websocket_video(websocket: WebSocket):
                             "temp_path": temp_video_path,
                             "width": frame_width,
                             "height": frame_height,
-                            "fps": fps
+                            "fps": fps,
+                            "room_id": room_id_for_recording  # Lưu room_id vào đây
                         }
-                        print(f"Started recording for connection {connection_id}, user: {user_id}")
+                        print(f"Started recording for connection {connection_id}, user: {user_id}, room: {room_id_for_recording}")
                     
                     # Thực hiện face swap sử dụng live_swap từ core
                     swapped_frame = process_frame_for_swap(frame)
@@ -533,19 +637,34 @@ async def websocket_video(websocket: WebSocket):
                         video_writer.write(swapped_frame)
                     
                     # Lưu frame vào stream room để người khác xem
+                    # Tìm room_id từ active_recordings hoặc từ stream_rooms
+                    room_id_to_update = None
                     if connection_id in active_recordings:
-                        recording_info = active_recordings[connection_id]
-                        # Tìm room_id từ connection_id
+                        room_id_to_update = active_recordings[connection_id].get("room_id")
+                    
+                    # Nếu không tìm thấy trong active_recordings, tìm trong stream_rooms
+                    if not room_id_to_update:
                         for rid, room_info in stream_rooms.items():
                             if room_info.get("connection_id") == connection_id:
-                                # Lưu frame vào buffer (giữ tối đa 30 frames)
-                                room_info["last_frame"] = swapped_frame.copy()
-                                frames_buffer = room_info.get("frames_buffer", [])
-                                frames_buffer.append(swapped_frame.copy())
-                                if len(frames_buffer) > 30:
-                                    frames_buffer.pop(0)  # Xóa frame cũ nhất
-                                room_info["frames_buffer"] = frames_buffer
+                                room_id_to_update = rid
                                 break
+                    
+                    # Cập nhật frame vào room
+                    if room_id_to_update and room_id_to_update in stream_rooms:
+                        try:
+                            room_info = stream_rooms[room_id_to_update]
+                            # Copy frame để tránh race condition
+                            frame_copy = swapped_frame.copy()
+                            room_info["last_frame"] = frame_copy
+                            
+                            # Cập nhật frames_buffer (giữ tối đa 30 frames)
+                            frames_buffer = room_info.get("frames_buffer", [])
+                            frames_buffer.append(frame_copy)
+                            if len(frames_buffer) > 30:
+                                frames_buffer.pop(0)  # Xóa frame cũ nhất
+                            room_info["frames_buffer"] = frames_buffer
+                        except Exception as e:
+                            print(f"Error updating frame for room {room_id_to_update}: {e}")
                     
                     # Encode swapped frame to base64 JPEG
                     _, buffer = cv2.imencode('.jpg', swapped_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -589,14 +708,20 @@ async def websocket_video(websocket: WebSocket):
             # Không xóa ngay, sẽ xóa khi call API stop-recording
             print(f"Stopped recording for connection {connection_id}")
         
-        # Xóa stream room khi disconnect (sau 5 phút để người xem có thời gian)
-        # Hoặc có thể giữ lại lâu hơn tùy nhu cầu
+        # Xóa stream room khi disconnect
+        # Chỉ xóa nếu không còn người xem
         for room_id, room_info in list(stream_rooms.items()):
             if room_info.get("connection_id") == connection_id:
-                # Xóa ngay hoặc đánh dấu để xóa sau
-                # Ở đây xóa ngay khi disconnect
-                del stream_rooms[room_id]
-                print(f"Removed stream room: {room_id}")
+                viewers_count = room_info.get("viewers_count", 0)
+                if viewers_count == 0:
+                    # Không còn người xem, xóa room ngay
+                    del stream_rooms[room_id]
+                    print(f"Removed stream room: {room_id} (no viewers)")
+                else:
+                    # Vẫn còn người xem, đánh dấu để xóa sau (sau 30 giây)
+                    room_info["marked_for_deletion"] = True
+                    room_info["deletion_time"] = time.time() + 30  # Xóa sau 30 giây
+                    print(f"Marked room {room_id} for deletion (viewers: {viewers_count})")
                 break
 
 
