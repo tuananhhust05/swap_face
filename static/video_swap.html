@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Video Face Swap - Upload & Download</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            width: 100%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        }
+
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 32px;
+        }
+
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 16px;
+        }
+
+        .upload-section {
+            margin-bottom: 30px;
+        }
+
+        .upload-box {
+            border: 2px dashed #ddd;
+            border-radius: 12px;
+            padding: 30px;
+            text-align: center;
+            margin-bottom: 20px;
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .upload-box:hover {
+            border-color: #667eea;
+            background: #f8f9ff;
+        }
+
+        .upload-box.dragover {
+            border-color: #667eea;
+            background: #f0f4ff;
+        }
+
+        .upload-icon {
+            font-size: 48px;
+            margin-bottom: 10px;
+        }
+
+        .upload-label {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+            display: block;
+        }
+
+        .upload-hint {
+            color: #999;
+            font-size: 14px;
+        }
+
+        input[type="file"] {
+            display: none;
+        }
+
+        .file-info {
+            margin-top: 10px;
+            padding: 10px;
+            background: #f5f5f5;
+            border-radius: 8px;
+            font-size: 14px;
+            color: #666;
+            display: none;
+        }
+
+        .file-info.show {
+            display: block;
+        }
+
+        .btn {
+            width: 100%;
+            padding: 16px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 12px;
+            font-size: 18px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 20px;
+        }
+
+        .btn:hover:not(:disabled) {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .progress {
+            margin-top: 20px;
+            display: none;
+        }
+
+        .progress.show {
+            display: block;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 8px;
+            background: #f0f0f0;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+            width: 0%;
+            transition: width 0.3s;
+        }
+
+        .progress-text {
+            text-align: center;
+            margin-top: 10px;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .result {
+            margin-top: 30px;
+            padding: 20px;
+            background: #f0f9ff;
+            border-radius: 12px;
+            border: 2px solid #667eea;
+            display: none;
+        }
+
+        .result.show {
+            display: block;
+            animation: slideIn 0.5s;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .result-title {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+
+        .download-link {
+            display: inline-block;
+            padding: 12px 24px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            font-weight: 600;
+            transition: all 0.3s;
+            margin-top: 10px;
+        }
+
+        .download-link:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+
+        .error {
+            margin-top: 20px;
+            padding: 15px;
+            background: #fee;
+            border: 2px solid #fcc;
+            border-radius: 12px;
+            color: #c33;
+            display: none;
+        }
+
+        .error.show {
+            display: block;
+        }
+
+        .preview {
+            margin-top: 15px;
+            max-width: 100%;
+            border-radius: 8px;
+            display: none;
+        }
+
+        .preview.show {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 Video Face Swap</h1>
+        <p class="subtitle">Upload ảnh mặt và video để swap mặt</p>
+
+        <form id="uploadForm">
+            <div class="upload-section">
+                <div class="upload-box" id="faceUploadBox">
+                    <div class="upload-icon">📷</div>
+                    <label for="faceImage" class="upload-label">Chọn ảnh mặt</label>
+                    <span class="upload-hint">PNG, JPG, JPEG</span>
+                    <input type="file" id="faceImage" accept="image/*" required>
+                    <div class="file-info" id="faceInfo"></div>
+                    <img id="facePreview" class="preview" alt="Preview">
+                </div>
+
+                <div class="upload-box" id="videoUploadBox">
+                    <div class="upload-icon">🎥</div>
+                    <label for="videoFile" class="upload-label">Chọn video</label>
+                    <span class="upload-hint">MP4, AVI, MOV, MKV, WEBM</span>
+                    <input type="file" id="videoFile" accept="video/*" required>
+                    <div class="file-info" id="videoInfo"></div>
+                </div>
+            </div>
+
+            <button type="submit" class="btn" id="submitBtn">Xử lý Video</button>
+
+            <div class="progress" id="progress">
+                <div class="progress-bar">
+                    <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <div class="progress-text" id="progressText">Đang xử lý...</div>
+            </div>
+
+            <div class="error" id="error"></div>
+
+            <div class="result" id="result">
+                <div class="result-title">✅ Xử lý thành công!</div>
+                <p>Video đã được swap mặt. Bấm vào link bên dưới để tải về:</p>
+                <a href="#" id="downloadLink" class="download-link" download>⬇️ Tải Video</a>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const form = document.getElementById('uploadForm');
+        const faceImage = document.getElementById('faceImage');
+        const videoFile = document.getElementById('videoFile');
+        const faceInfo = document.getElementById('faceInfo');
+        const videoInfo = document.getElementById('videoInfo');
+        const facePreview = document.getElementById('facePreview');
+        const submitBtn = document.getElementById('submitBtn');
+        const progress = document.getElementById('progress');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
+        const error = document.getElementById('error');
+        const result = document.getElementById('result');
+        const downloadLink = document.getElementById('downloadLink');
+        const faceUploadBox = document.getElementById('faceUploadBox');
+        const videoUploadBox = document.getElementById('videoUploadBox');
+
+        // Preview face image
+        faceImage.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                faceInfo.textContent = `📷 ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
+                faceInfo.classList.add('show');
+                
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    facePreview.src = e.target.result;
+                    facePreview.classList.add('show');
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Show video info
+        videoFile.addEventListener('change', (e) => {
+            const file = e.target.files[0];
+            if (file) {
+                videoInfo.textContent = `🎥 ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`;
+                videoInfo.classList.add('show');
+            }
+        });
+
+        // Drag and drop
+        [faceUploadBox, videoUploadBox].forEach((box, index) => {
+            const input = index === 0 ? faceImage : videoFile;
+            
+            box.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                box.classList.add('dragover');
+            });
+
+            box.addEventListener('dragleave', () => {
+                box.classList.remove('dragover');
+            });
+
+            box.addEventListener('drop', (e) => {
+                e.preventDefault();
+                box.classList.remove('dragover');
+                const files = e.dataTransfer.files;
+                if (files.length > 0) {
+                    input.files = files;
+                    input.dispatchEvent(new Event('change'));
+                }
+            });
+
+            box.addEventListener('click', () => {
+                input.click();
+            });
+        });
+
+        // Form submit
+        form.addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            if (!faceImage.files[0] || !videoFile.files[0]) {
+                showError('Vui lòng chọn cả ảnh mặt và video!');
+                return;
+            }
+
+            // Reset UI
+            error.classList.remove('show');
+            result.classList.remove('show');
+            progress.classList.add('show');
+            submitBtn.disabled = true;
+            progressFill.style.width = '0%';
+            progressText.textContent = 'Đang upload và xử lý...';
+
+            const formData = new FormData();
+            formData.append('face_image', faceImage.files[0]);
+            formData.append('video', videoFile.files[0]);
+
+            try {
+                // Simulate progress
+                let progressValue = 0;
+                const progressInterval = setInterval(() => {
+                    progressValue += 2;
+                    if (progressValue < 90) {
+                        progressFill.style.width = progressValue + '%';
+                    }
+                }, 200);
+
+                const response = await fetch('/api/process-video', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                clearInterval(progressInterval);
+                progressFill.style.width = '100%';
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    progressText.textContent = 'Hoàn thành!';
+                    setTimeout(() => {
+                        progress.classList.remove('show');
+                        result.classList.add('show');
+                        downloadLink.href = data.download_url;
+                        downloadLink.download = data.filename;
+                    }, 500);
+                } else {
+                    throw new Error(data.detail || data.message || 'Xử lý video thất bại');
+                }
+            } catch (err) {
+                progress.classList.remove('show');
+                showError('Lỗi: ' + err.message);
+            } finally {
+                submitBtn.disabled = false;
+            }
+        });
+
+        function showError(message) {
+            error.textContent = message;
+            error.classList.add('show');
+            setTimeout(() => {
+                error.classList.remove('show');
+            }, 5000);
+        }
+    </script>
+</body>
+</html>
+

@@ -1,0 +1,869 @@
+#!/usr/bin/env python3
+"""
+FastAPI Server for roop-unleashed
+Chạy ở chế độ public trên port 5349
+"""
+
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+from typing import Optional, List, Dict
+import os
+import socket
+import urllib.request
+import json
+import base64
+import cv2
+import numpy as np
+import asyncio
+from io import BytesIO
+import time
+import uuid
+import shutil
+from datetime import datetime
+import subprocess
+
+# Import các module từ roop core (không sửa core)
+import roop.globals
+import roop.metadata
+from roop.core import decode_execution_providers, set_display_ui, live_swap
+from settings import Settings
+import roop.utilities as util
+import ui.globals as uii
+
+app = FastAPI(
+    title=roop.metadata.name,
+    version=roop.metadata.version,
+    description="API Server for roop-unleashed - Real-time Face Swap"
+)
+
+# CORS middleware để cho phép truy cập từ bên ngoài
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Cho phép tất cả origins (có thể giới hạn sau)
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Mount static files directory
+static_dir = os.path.join(os.path.dirname(__file__), "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+# Tạo thư mục video_records để lưu video của users
+VIDEO_RECORDS_DIR = os.path.join(os.path.dirname(__file__), "video_records")
+os.makedirs(VIDEO_RECORDS_DIR, exist_ok=True)
+
+# Mount video_records để public
+app.mount("/video_records", StaticFiles(directory=VIDEO_RECORDS_DIR), name="video_records")
+
+# Thư mục tạm để lưu video đang ghi
+TEMP_VIDEO_DIR = os.path.join(os.path.dirname(__file__), "temp_videos")
+os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
+
+# Dictionary để lưu VideoWriter và thông tin cho mỗi websocket connection
+active_recordings: Dict[str, Dict] = {}  # {connection_id: {video_writer, user_id, temp_path, width, height, fps}}
+
+# Dictionary để lưu stream rooms và frames buffer
+stream_rooms: Dict[str, Dict] = {}  # {room_id: {frames_buffer, last_frame, created_at, user_id}}
+# frames_buffer là list các frame đã swap (giữ tối đa 30 frames để tránh memory leak)
+
+count = 0
+processed_frame = None
+
+
+def decode_jwt_simple(token: str) -> Optional[Dict]:
+    """
+    Decode JWT token đơn giản (chỉ decode payload, không verify signature)
+    Không cần PyJWT, chỉ decode base64
+    """
+    try:
+        # JWT có format: header.payload.signature
+        parts = token.split('.')
+        if len(parts) != 3:
+            return None
+        
+        # Decode payload (part 1)
+        payload = parts[1]
+        # Base64URL decode
+        payload = payload.replace('-', '+').replace('_', '/')
+        # Add padding if needed
+        padding = len(payload) % 4
+        if padding:
+            payload += '=' * (4 - padding)
+        
+        decoded_bytes = base64.b64decode(payload)
+        decoded_json = json.loads(decoded_bytes.decode('utf-8'))
+        return decoded_json
+    except Exception as e:
+        print(f"Error decoding JWT: {e}")
+        return None
+
+
+@app.get("/")
+async def root(request: Request):
+    """Root endpoint - Serve web interface"""
+    # Client sẽ decode token và gửi user_id qua WebSocket hoặc API
+    html_path = os.path.join(static_dir, "index.html")
+    if os.path.exists(html_path):
+        return FileResponse(html_path)
+    return {
+        "name": roop.metadata.name,
+        "version": roop.metadata.version,
+        "status": "running",
+        "endpoints": {
+            "web_interface": "/",
+            "health": "/health",
+            "info": "/info",
+            "api_docs": "/docs",
+            "websocket": "/ws/video",
+            "stop_recording": "/api/stop-recording"
+        }
+    }
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": roop.metadata.name
+    }
+
+
+@app.get("/info")
+async def get_info():
+    """Thông tin về hệ thống"""
+    return {
+        "name": roop.metadata.name,
+        "version": roop.metadata.version,
+        "execution_providers": roop.globals.execution_providers if hasattr(roop.globals, 'execution_providers') else [],
+        "config": {
+            "server_port": 5349,
+            "mode": "public"
+        }
+    }
+
+
+@app.get("/api/status")
+async def get_status():
+    """Trạng thái xử lý"""
+    return {
+        "processing": getattr(roop.globals, 'processing', False),
+        "execution_providers": getattr(roop.globals, 'execution_providers', []),
+        "has_faces": len(getattr(roop.globals, 'INPUT_FACESETS', [])) > 0,
+        "facesets_count": len(getattr(roop.globals, 'INPUT_FACESETS', []))
+    }
+
+
+@app.post("/api/upload-face")
+async def upload_face(file: UploadFile = File(...)):
+    """
+    Upload face image và lưu vào source.png, sau đó reload face từ source.png
+    """
+    try:
+        # Đọc file
+        contents = await file.read()
+        
+        # Convert to numpy array để validate
+        nparr = np.frombuffer(contents, np.uint8)
+        image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        
+        if image is None:
+            raise HTTPException(status_code=400, detail="Invalid image file")
+        
+        # Lưu vào source.png
+        source_path = os.path.join(os.path.dirname(__file__), "source.png")
+        with open(source_path, 'wb') as f:
+            f.write(contents)
+        
+        print(f'Face image saved to source.png')
+        
+        # Reload face từ source.png (sử dụng hàm có sẵn)
+        success = load_source_face()
+        
+        if not success:
+            raise HTTPException(status_code=400, detail="No face detected in uploaded image. Please upload an image with a clear face.")
+        
+        facesets_count = len(getattr(roop.globals, 'INPUT_FACESETS', []))
+        face_count = 0
+        if facesets_count > 0 and len(roop.globals.INPUT_FACESETS[0].faces) > 0:
+            face_count = len(roop.globals.INPUT_FACESETS[0].faces)
+        
+        return {
+            "success": True,
+            "message": f"Face uploaded and saved to source.png. {face_count} face(s) detected and loaded.",
+            "facesets_count": facesets_count,
+            "face_count": face_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error processing face: {str(e)}")
+
+
+@app.delete("/api/clear-faces")
+async def clear_faces():
+    """Xóa tất cả faces đã upload"""
+    if hasattr(roop.globals, 'INPUT_FACESETS'):
+        roop.globals.INPUT_FACESETS = []
+    return {"success": True, "message": "All faces cleared"}
+
+
+@app.get("/watch/{room_id}")
+async def watch_stream(room_id: str):
+    """
+    Endpoint để xem stream video sau khi swap face
+    Trả về MJPEG stream (Motion JPEG) - có thể xem bằng browser hoặc VLC
+    """
+    if room_id not in stream_rooms:
+        raise HTTPException(status_code=404, detail="Room not found or expired")
+    
+    room = stream_rooms[room_id]
+    
+    async def generate_frames():
+        """Generator để tạo MJPEG stream"""
+        while room_id in stream_rooms:
+            if room.get("last_frame"):
+                # Encode frame thành JPEG
+                _, buffer = cv2.imencode('.jpg', room["last_frame"], [cv2.IMWRITE_JPEG_QUALITY, 85])
+                frame_bytes = buffer.tobytes()
+                
+                # MJPEG format: boundary + frame
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            
+            # Đợi một chút trước khi gửi frame tiếp theo (25 FPS = ~40ms)
+            await asyncio.sleep(0.04)
+    
+    return StreamingResponse(
+        generate_frames(),
+        media_type="multipart/x-mixed-replace; boundary=frame"
+    )
+
+
+@app.get("/api/videos")
+async def get_user_videos(token: str = Query(..., description="JWT Token")):
+    """
+    Lấy danh sách video records của user
+    Nhận token JWT từ params, decode để lấy user_id
+    Trả về danh sách video với đường dẫn, ngày tạo, tên file
+    Sắp xếp từ mới đến cũ
+    """
+    try:
+        # Decode token để lấy user_id
+        decoded = decode_jwt_simple(token)
+        if not decoded:
+            raise HTTPException(status_code=400, detail="Invalid token")
+        
+        user_id = decoded.get("user_id") or decoded.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        # Đường dẫn folder của user
+        user_folder = os.path.join(VIDEO_RECORDS_DIR, user_id)
+        
+        if not os.path.exists(user_folder):
+            return {
+                "success": True,
+                "user_id": user_id,
+                "videos": [],
+                "count": 0
+            }
+        
+        # Lấy danh sách file video
+        video_files = []
+        for filename in os.listdir(user_folder):
+            if filename.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+                file_path = os.path.join(user_folder, filename)
+                if os.path.isfile(file_path):
+                    # Lấy thông tin file
+                    file_stat = os.stat(file_path)
+                    created_time = datetime.fromtimestamp(file_stat.st_ctime)
+                    modified_time = datetime.fromtimestamp(file_stat.st_mtime)
+                    file_size = file_stat.st_size
+                    
+                    # Tạo URL để truy cập video
+                    video_url = f"/video_records/{user_id}/{filename}"
+                    
+                    video_files.append({
+                        "filename": filename,
+                        "url": video_url,
+                        "created_at": created_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "created_at_timestamp": int(file_stat.st_ctime),
+                        "modified_at": modified_time.strftime("%Y-%m-%d %H:%M:%S"),
+                        "modified_at_timestamp": int(file_stat.st_mtime),
+                        "size": file_size,
+                        "size_mb": round(file_size / (1024 * 1024), 2)
+                    })
+        
+        # Sắp xếp từ mới đến cũ (theo created_at_timestamp)
+        video_files.sort(key=lambda x: x["created_at_timestamp"], reverse=True)
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "videos": video_files,
+            "count": len(video_files)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_user_videos: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting videos: {str(e)}")
+
+
+@app.post("/api/stop-recording")
+async def stop_recording(user_id: str = Query(..., description="User ID")):
+    """
+    Stop recording và lưu video vào folder của user
+    Tìm file video tạm của user đó và move vào folder user
+    """
+    try:
+        if not user_id:
+            raise HTTPException(status_code=400, detail="user_id is required")
+        
+        # Tìm file video tạm của user này (tìm trong active_recordings theo user_id)
+        temp_file = None
+        conn_id_to_remove = None
+        
+        # Tìm trong active_recordings theo user_id
+        for conn_id, recording_info in active_recordings.items():
+            if recording_info.get("user_id") == user_id:
+                temp_path = recording_info.get("temp_path")
+                if temp_path and os.path.exists(temp_path):
+                    temp_file = temp_path
+                    conn_id_to_remove = conn_id
+                    break
+        
+        # Nếu không tìm thấy trong active_recordings, tìm file mới nhất trong temp folder
+        # (fallback cho trường hợp WebSocket đã disconnect nhưng file vẫn còn)
+        if not temp_file:
+            temp_files = [f for f in os.listdir(TEMP_VIDEO_DIR) if f.endswith('.avi')]
+            if temp_files:
+                # Lấy file mới nhất
+                latest_time = 0
+                for temp_file_name in temp_files:
+                    temp_path = os.path.join(TEMP_VIDEO_DIR, temp_file_name)
+                    file_time = os.path.getmtime(temp_path)
+                    if file_time > latest_time:
+                        latest_time = file_time
+                        temp_file = temp_path
+        
+        if not temp_file or not os.path.exists(temp_file):
+            raise HTTPException(status_code=404, detail="No recording found for this user")
+        
+        # Đóng video writer nếu đang mở (từ active_recordings)
+        if conn_id_to_remove and conn_id_to_remove in active_recordings:
+            recording_info = active_recordings[conn_id_to_remove]
+            video_writer = recording_info.get("video_writer")
+            if video_writer:
+                try:
+                    video_writer.release()
+                except:
+                    pass
+        
+        # Tạo folder cho user nếu chưa có
+        user_folder = os.path.join(VIDEO_RECORDS_DIR, user_id)
+        os.makedirs(user_folder, exist_ok=True)
+        
+        # Tạo tên file video với timestamp
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_filename = f"video_{timestamp}.mp4"
+        output_path = os.path.join(user_folder, output_filename)
+        
+        # Re-encode video với ffmpeg để đảm bảo tương thích
+        print(f"Re-encoding video for user {user_id}...")
+        try:
+            cmd = [
+                'ffmpeg',
+                '-i', temp_file,
+                '-c:v', 'libx264',
+                '-preset', 'medium',
+                '-crf', '23',
+                '-pix_fmt', 'yuv420p',
+                '-movflags', '+faststart',
+                '-y',
+                output_path
+            ]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode == 0 and os.path.isfile(output_path):
+                # Xóa file tạm
+                try:
+                    os.remove(temp_file)
+                except:
+                    pass
+                
+                # Xóa khỏi active_recordings nếu có
+                if conn_id_to_remove and conn_id_to_remove in active_recordings:
+                    del active_recordings[conn_id_to_remove]
+                
+                # Tạo URL để truy cập video
+                video_url = f"/video_records/{user_id}/{output_filename}"
+                
+                print(f"Video saved for user {user_id}: {output_path}")
+                return {
+                    "success": True,
+                    "message": "Video saved successfully",
+                    "video_url": video_url,
+                    "filename": output_filename
+                }
+            else:
+                error_msg = result.stderr if result.stderr else "Unknown error"
+                raise Exception(f"FFmpeg encoding failed: {error_msg}")
+        except Exception as e:
+            print(f"Error re-encoding video: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to save video: {str(e)}")
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in stop_recording: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error saving video: {str(e)}")
+
+
+@app.websocket("/ws/video")
+async def websocket_video(websocket: WebSocket):
+    """
+    WebSocket endpoint cho real-time video streaming và face swap
+    Client sẽ gửi user_id trong message khi bắt đầu recording
+    """
+    await websocket.accept()
+    
+    # Tạo connection ID
+    connection_id = str(uuid.uuid4())
+    video_writer = None
+    temp_video_path = None
+    frame_width = None
+    frame_height = None
+    fps = 25  # Default FPS
+    user_id = None  # Sẽ nhận từ client
+    
+    try:
+        while True:
+            # Nhận frame từ client
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            # Nhận user_id từ client (gửi lần đầu khi bắt đầu)
+            if message.get("type") == "start_recording":
+                user_id = message.get("user_id")
+                if user_id:
+                    print(f"WebSocket connection - User ID: {user_id}")
+                    
+                    # Tạo room_id cho stream
+                    room_id = str(uuid.uuid4())
+                    stream_rooms[room_id] = {
+                        "frames_buffer": [],
+                        "last_frame": None,
+                        "created_at": datetime.now(),
+                        "user_id": user_id,
+                        "connection_id": connection_id
+                    }
+                    
+                    # Gửi room_id và watch link về client
+                    await websocket.send_json({
+                        "type": "room_created",
+                        "room_id": room_id,
+                        "watch_url": f"/watch/{room_id}",
+                        "message": "Stream room created"
+                    })
+                    print(f"Created stream room: {room_id} for user: {user_id}")
+            
+            if message.get("type") == "frame":
+                # Decode base64 frame
+                frame_base64 = message.get("frame", "")
+                timestamp = message.get("timestamp", 0)
+                
+                try:
+                    # Decode base64 to image
+                    frame_bytes = base64.b64decode(frame_base64)
+                    nparr = np.frombuffer(frame_bytes, np.uint8)
+                    frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    
+                    if frame is None:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Failed to decode frame"
+                        })
+                        continue
+                    
+                    # Lấy kích thước frame lần đầu để khởi tạo video writer
+                    if video_writer is None and connection_id not in active_recordings:
+                        frame_height, frame_width = frame.shape[:2]
+                        # Đảm bảo width và height là số chẵn
+                        frame_width = frame_width if frame_width % 2 == 0 else frame_width - 1
+                        frame_height = frame_height if frame_height % 2 == 0 else frame_height - 1
+                        
+                        # Tạo file video tạm
+                        temp_video_path = os.path.join(TEMP_VIDEO_DIR, f"{connection_id}.avi")
+                        fourcc = cv2.VideoWriter_fourcc(*'XVID')
+                        video_writer = cv2.VideoWriter(temp_video_path, fourcc, fps, (frame_width, frame_height))
+                        
+                        # Lưu thông tin recording
+                        active_recordings[connection_id] = {
+                            "video_writer": video_writer,
+                            "user_id": user_id,
+                            "temp_path": temp_video_path,
+                            "width": frame_width,
+                            "height": frame_height,
+                            "fps": fps
+                        }
+                        print(f"Started recording for connection {connection_id}, user: {user_id}")
+                    
+                    # Thực hiện face swap sử dụng live_swap từ core
+                    swapped_frame = process_frame_for_swap(frame)
+                    
+                    # Resize nếu cần
+                    if video_writer and (swapped_frame.shape[1] != frame_width or swapped_frame.shape[0] != frame_height):
+                        swapped_frame = cv2.resize(swapped_frame, (frame_width, frame_height))
+                    
+                    # Ghi frame vào video nếu đang recording
+                    if video_writer and video_writer.isOpened():
+                        video_writer.write(swapped_frame)
+                    
+                    # Lưu frame vào stream room để người khác xem
+                    if connection_id in active_recordings:
+                        recording_info = active_recordings[connection_id]
+                        # Tìm room_id từ connection_id
+                        for rid, room_info in stream_rooms.items():
+                            if room_info.get("connection_id") == connection_id:
+                                # Lưu frame vào buffer (giữ tối đa 30 frames)
+                                room_info["last_frame"] = swapped_frame.copy()
+                                frames_buffer = room_info.get("frames_buffer", [])
+                                frames_buffer.append(swapped_frame.copy())
+                                if len(frames_buffer) > 30:
+                                    frames_buffer.pop(0)  # Xóa frame cũ nhất
+                                room_info["frames_buffer"] = frames_buffer
+                                break
+                    
+                    # Encode swapped frame to base64 JPEG
+                    _, buffer = cv2.imencode('.jpg', swapped_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    swapped_base64 = base64.b64encode(buffer).decode('utf-8')
+                    
+                    # Gửi frame đã swap về client
+                    await websocket.send_json({
+                        "type": "frame",
+                        "frame": swapped_base64,
+                        "timestamp": timestamp
+                    })
+                    
+                except Exception as e:
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": f"Processing error: {str(e)}"
+                    })
+            
+            elif message.get("type") == "stop_recording":
+                # Client yêu cầu stop recording
+                break
+                    
+    except WebSocketDisconnect:
+        print(f"WebSocket client disconnected: {connection_id}")
+    except Exception as e:
+        print(f"WebSocket error: {e}")
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "message": str(e)
+            })
+        except:
+            pass
+    finally:
+        # Cleanup: đóng video writer và xóa khỏi active_recordings
+        if connection_id in active_recordings:
+            recording_info = active_recordings[connection_id]
+            if recording_info["video_writer"]:
+                recording_info["video_writer"].release()
+            # Giữ lại thông tin để có thể lưu sau khi stop
+            # Không xóa ngay, sẽ xóa khi call API stop-recording
+            print(f"Stopped recording for connection {connection_id}")
+        
+        # Xóa stream room khi disconnect (sau 5 phút để người xem có thời gian)
+        # Hoặc có thể giữ lại lâu hơn tùy nhu cầu
+        for room_id, room_info in list(stream_rooms.items()):
+            if room_info.get("connection_id") == connection_id:
+                # Xóa ngay hoặc đánh dấu để xóa sau
+                # Ở đây xóa ngay khi disconnect
+                del stream_rooms[room_id]
+                print(f"Removed stream room: {room_id}")
+                break
+
+
+def process_frame_for_swap(frame):
+    global count
+    global processed_frame
+    count = count + 1
+    """
+    Xử lý frame để swap face - sử dụng logic từ livecam_tab
+    Không sửa core, chỉ gọi các hàm có sẵn
+    """
+    try:
+        if(count % 6 == 0):
+            start_time = time.time()
+            # frame_height, frame_width = frame.shape[:2]
+            # print(f"[Frame {count}] Input size: {frame_width}x{frame_height} | Channels: {frame.shape[2] if len(frame.shape) > 2 else 1}")
+            
+            # frame_copy = frame.copy()
+            # frame_resized =  cv2.resize(frame_copy , (320, 240))
+            
+            # Kiểm tra xem có INPUT_FACESETS không
+            if not hasattr(roop.globals, 'INPUT_FACESETS') or len(roop.globals.INPUT_FACESETS) == 0:
+                print("Warning: No INPUT_FACESETS available, returning original frame")
+                return frame
+            
+            # Đảm bảo TARGET_FACES được khởi tạo
+            if not hasattr(roop.globals, 'TARGET_FACES'):
+                roop.globals.TARGET_FACES = []
+
+             # ⚠️ QUAN TRỌNG: Đảm bảo TẮT enhancer để tăng tốc
+            roop.globals.selected_enhancer = None
+            
+            # Lấy các tham số từ globals (đã set trong initialize_roop)
+            swap_mode = getattr(roop.globals, 'face_swap_mode', 'all')
+            use_clip = False
+            clip_text = None
+            selected_index = getattr(uii, 'ui_SELECTED_INPUT_FACE_INDEX', 0)
+            
+            # Đảm bảo các tham số cần thiết được set
+            if not hasattr(roop.globals, 'distance_threshold'):
+                roop.globals.distance_threshold = 0.65
+            if not hasattr(roop.globals, 'blend_ratio'):
+                roop.globals.blend_ratio = 0.5
+            
+            # Gọi live_swap từ core (không sửa core, chỉ gọi hàm)
+            # Sử dụng logic giống như on_stream_swap_cam trong livecam_tab.py
+            swapped_frame = live_swap(frame, swap_mode, use_clip, clip_text, selected_index)
+            
+            # Nếu live_swap trả về None hoặc giống frame gốc, trả về frame đã swap
+            if swapped_frame is None:
+                print("Warning: live_swap returned None, returning original frame")
+                return frame
+            processed_frame = swapped_frame
+            end_time = time.time()
+            # print(f"Time taken: {end_time - start_time} seconds")
+            return swapped_frame
+        else:
+            
+            if(processed_frame is not None):
+                return processed_frame
+            else:
+                return frame
+        
+    except Exception as e:
+        print(f"Error in process_frame_for_swap: {e}")
+        import traceback
+        traceback.print_exc()
+        # Nếu có lỗi, trả về frame gốc
+        return frame
+    
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request, exc):
+    """Xử lý exception toàn cục"""
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc), "type": type(exc).__name__}
+    )
+
+
+def get_public_ip():
+    """Lấy public IP của server"""
+    try:
+        # Thử nhiều API đ ể lấy publicIP
+        services = [
+            'https://api.ipify.org?format=json',
+            'https://ifconfig.me/ip',
+            'https://icanhazip.com',
+            'https://checkip.amazonaws.com'
+        ]
+        
+        for service in services:
+            try:
+                with urllib.request.urlopen(service, timeout=3) as response:
+                    if 'json' in service:
+                        data = json.loads(response.read().decode())
+                        return data.get('ip', '')
+                    else:
+                        return response.read().decode().strip()
+            except:
+                continue
+        
+        # Fallback: lấy local IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 80))
+            local_ip = s.getsockname()[0]
+        except:
+            local_ip = '127.0.0.1'
+        finally:
+            s.close()
+        
+        return local_ip
+    except Exception as e:
+        return None
+
+
+def get_local_ip():
+    """Lấy local IP của server"""
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 80))
+            local_ip = s.getsockname()[0]
+        except:
+            local_ip = '127.0.0.1'
+        finally:
+            s.close()
+        return local_ip
+    except:
+        return '127.0.0.1'
+
+
+def load_source_face():
+    """
+    Tự động load face từ source.png nếu file tồn tại
+    Không sửa core, chỉ gọi các hàm có sẵn
+    """
+    source_path = os.path.join(os.path.dirname(__file__), "source.png")
+    
+    if not os.path.exists(source_path):
+        print(f'Source image not found: {source_path}')
+        return False
+    
+    try:
+        from roop.face_util import extract_face_images
+        from roop.FaceSet import FaceSet
+        
+        # Initialize INPUT_FACESETS nếu chưa có
+        if not hasattr(roop.globals, 'INPUT_FACESETS'):
+            roop.globals.INPUT_FACESETS = []
+        
+        # Clear existing facesets để load face mới từ source.png
+        roop.globals.INPUT_FACESETS = []
+        
+        print(f'Loading face from source.png...')
+        
+        # Extract faces từ source.png
+        face_data = extract_face_images(source_path, (False, 0))
+        
+        if len(face_data) == 0:
+            print(f'No face detected in source.png')
+            return False
+        
+        # Tạo FaceSet
+        face_set = FaceSet()
+        source_image = cv2.imread(source_path)
+        
+        for f in face_data:
+            face = f[0]
+            face.mask_offsets = (0, 0)
+            face_set.faces.append(face)
+            face_set.ref_images.append(source_image)
+        
+        # Nếu có nhiều faces, tính average embeddings
+        if len(face_set.faces) > 1:
+            face_set.AverageEmbeddings()
+        
+        # Thêm vào INPUT_FACESETS (thay thế nếu đã có)
+        roop.globals.INPUT_FACESETS = [face_set]
+        
+        print(f'Successfully loaded {len(face_set.faces)} face(s) from source.png')
+        return True
+        
+    except Exception as e:
+        print(f'Error loading source.png: {e}')
+        return False
+
+
+def initialize_roop():
+    """Khởi tạo roop core (không sửa core, chỉ gọi hàm có sẵn)"""
+    # Load settings
+    if not hasattr(roop.globals, 'CFG') or roop.globals.CFG is None:
+        roop.globals.CFG = Settings('config.yaml')
+    
+    # Decode execution providers
+    if not hasattr(roop.globals, 'execution_providers'):
+        roop.globals.execution_providers = decode_execution_providers([roop.globals.CFG.provider])
+    
+    # Set execution threads
+    roop.globals.execution_threads = roop.globals.CFG.max_threads
+    
+    # Initialize INPUT_FACESETS và TARGET_FACES
+    if not hasattr(roop.globals, 'INPUT_FACESETS'):
+        roop.globals.INPUT_FACESETS = []
+    if not hasattr(roop.globals, 'TARGET_FACES'):
+        roop.globals.TARGET_FACES = []
+    
+    # Set các tham số cần thiết cho face swap (mặc định)
+    roop.globals.face_swap_mode = 'all'  # Swap tất cả faces
+    roop.globals.distance_threshold = 0.65  # Ngưỡng khoảng cách để detect face
+    roop.globals.blend_ratio = 0.5  # Tỷ lệ blend
+    roop.globals.selected_enhancer = None  # Không dùng enhancer mặc định (có thể set sau)
+    
+    # Tự động load face từ source.png
+    load_source_face()
+    
+    print(f'FastAPI Server initialized')
+    print(f'Using provider {roop.globals.execution_providers}')
+    print(f'INPUT_FACESETS count: {len(roop.globals.INPUT_FACESETS)}')
+    print(f'Face swap mode: {roop.globals.face_swap_mode}')
+    print(f'Distance threshold: {roop.globals.distance_threshold}')
+    print(f'Blend ratio: {roop.globals.blend_ratio}')
+
+
+def run_server():
+    """Chạy FastAPI server ở chế độ public"""
+    # Khởi tạo roop core
+    initialize_roop()
+    
+    # Lấy IP addresses
+    public_ip = get_public_ip()
+    local_ip = get_local_ip()
+    
+    # Chạy server với uvicorn
+    config = uvicorn.Config(
+        app,
+        host="0.0.0.0",  # Public mode - listen on all interfaces
+        port=5349,
+        log_level="info",
+        access_log=True
+    )
+    
+    server = uvicorn.Server(config)
+    print(f"\n{'='*60}")
+    print(f"FastAPI Server starting...")
+    print(f"{'='*60}")
+    print(f"Server (Public):  http://0.0.0.0:5349")
+    if public_ip:
+        print(f"Public IP:       http://{public_ip}:5349")
+    print(f"Local IP:        http://{local_ip}:5349")
+    print(f"Localhost:       http://127.0.0.1:5349")
+    print(f"{'='*60}")
+    print(f"Web Interface:")
+    if public_ip:
+        print(f"  Real-Time Face Swap: http://{public_ip}:5349/")
+    print(f"  Local Access:        http://{local_ip}:5349/")
+    print(f"{'='*60}")
+    print(f"API Documentation:")
+    if public_ip:
+        print(f"  Swagger UI:    http://{public_ip}:5349/docs")
+    print(f"  ReDoc:         http://{public_ip if public_ip else local_ip}:5349/redoc")
+    print(f"{'='*60}\n")
+    
+    server.run()
+
+
+if __name__ == "__main__":
+    run_server()
+
