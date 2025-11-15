@@ -389,51 +389,147 @@
         }
 
         .stream-link-box {
-            background: rgba(52, 199, 89, 0.1);
-            border: 2px solid rgba(52, 199, 89, 0.3);
-            border-radius: 12px;
-            padding: 20px;
-            margin: 20px 0;
+            background: linear-gradient(135deg, rgba(0, 113, 227, 0.05) 0%, rgba(0, 113, 227, 0.1) 100%);
+            border: 1px solid rgba(0, 113, 227, 0.2);
+            border-radius: 20px;
+            padding: 32px;
+            margin: 30px 0;
             display: none;
+            box-shadow: 0 4px 20px rgba(0, 113, 227, 0.08);
+            backdrop-filter: blur(10px);
         }
 
         .stream-link-box.show {
             display: block;
-            animation: slideIn 0.5s;
+            animation: slideIn 0.5s ease;
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
         }
 
         .stream-link-title {
             font-weight: 600;
-            color: var(--apple-success);
-            margin-bottom: 10px;
-            font-size: 16px;
+            color: var(--apple-text);
+            margin-bottom: 20px;
+            font-size: 18px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            letter-spacing: -0.3px;
+        }
+
+        .stream-link-title::before {
+            content: "🔗";
+            font-size: 20px;
         }
 
         .stream-link-url {
-            background: white;
-            padding: 12px;
-            border-radius: 8px;
-            font-family: monospace;
-            font-size: 14px;
+            background: var(--apple-card);
+            padding: 16px 20px;
+            border-radius: 12px;
+            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+            font-size: 13px;
             word-break: break-all;
-            margin: 10px 0;
+            margin-bottom: 24px;
             border: 1px solid var(--apple-border);
+            color: var(--apple-text);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.04);
+            line-height: 1.6;
         }
 
-        .copy-btn {
-            padding: 8px 16px;
-            background: var(--apple-blue);
+        .share-buttons {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            justify-content: center;
+        }
+
+        .share-btn {
+            padding: 14px 28px;
             color: white;
             border: none;
-            border-radius: 8px;
+            border-radius: 12px;
             cursor: pointer;
-            font-size: 14px;
+            font-size: 15px;
             font-weight: 500;
-            margin-top: 10px;
+            text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+            transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+            position: relative;
+            overflow: hidden;
         }
 
-        .copy-btn:hover {
-            background: var(--apple-blue-hover);
+        .share-btn::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 0;
+            height: 0;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.2);
+            transform: translate(-50%, -50%);
+            transition: width 0.6s, height 0.6s;
+        }
+
+        .share-btn:hover::before {
+            width: 300px;
+            height: 300px;
+        }
+
+        .share-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.15);
+        }
+
+        .share-btn:active {
+            transform: translateY(0);
+        }
+
+        .share-btn-facebook {
+            background: linear-gradient(135deg, #1877f2 0%, #166fe5 100%);
+        }
+
+        .share-btn-facebook:hover {
+            background: linear-gradient(135deg, #166fe5 0%, #1460d4 100%);
+        }
+
+        .share-btn-twitter {
+            background: linear-gradient(135deg, #000000 0%, #1a1a1a 100%);
+        }
+
+        .share-btn-twitter:hover {
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+        }
+
+        .share-btn-tiktok {
+            background: linear-gradient(135deg, #000000 0%, #1a1a1a 100%);
+        }
+
+        .share-btn-tiktok:hover {
+            background: linear-gradient(135deg, #1a1a1a 0%, #2d2d2d 100%);
+        }
+
+        .share-btn svg {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        .share-btn span {
+            position: relative;
+            z-index: 1;
         }
 
         .preview-image {
@@ -516,27 +612,26 @@
         <div class="error-message" id="errorMessage"></div>
         
         <div class="stream-link-box" id="streamLinkBox">
-            <div class="stream-link-title">🔗 Stream Link (Share for others to watch)</div>
+            <div class="stream-link-title">Stream Link</div>
             <div class="stream-link-url" id="streamLinkUrl"></div>
             <div class="share-buttons">
-                <button class="copy-btn" onclick="copyStreamLink()">📋 Copy Link</button>
                 <a href="#" id="shareFacebook" class="share-btn share-btn-facebook" target="_blank">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
                         <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
                     </svg>
-                    Share on Facebook
+                    <span>Share on Facebook</span>
                 </a>
                 <a href="#" id="shareTwitter" class="share-btn share-btn-twitter" target="_blank">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
                         <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H5.08l4.793 6.588h.002L18.244 2.25z"/>
                     </svg>
-                    Share on X
+                    <span>Share on X</span>
                 </a>
                 <a href="https://www.tiktok.com/upload?lang=en" id="shareTikTok" class="share-btn share-btn-tiktok" target="_blank">
-                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                    <svg viewBox="0 0 24 24" fill="currentColor">
                         <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
                     </svg>
-                    Share on TikTok
+                    <span>Share on TikTok</span>
                 </a>
             </div>
         </div>
@@ -721,21 +816,6 @@
             }
         }
 
-        function copyStreamLink() {
-            if (window.currentStreamUrl) {
-                navigator.clipboard.writeText(window.currentStreamUrl).then(() => {
-                    const btn = event.target;
-                    const originalText = btn.textContent;
-                    btn.textContent = '✅ Copied!';
-                    setTimeout(() => {
-                        btn.textContent = originalText;
-                    }, 2000);
-                }).catch(err => {
-                    console.error('Failed to copy:', err);
-                    showError('Failed to copy link');
-                });
-            }
-        }
 
         function updateStatus(status, type) {
             statusText.textContent = status;
