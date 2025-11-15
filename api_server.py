@@ -67,12 +67,10 @@ os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
 # Dictionary để lưu VideoWriter và thông tin cho mỗi websocket connection
 active_recordings: Dict[str, Dict] = {}  # {connection_id: {video_writer, user_id, temp_path, width, height, fps}}
 
-# Dictionary để lưu stream rooms và frames buffer
-stream_rooms: Dict[str, Dict] = {}  # {room_id: {frames_buffer, last_frame, created_at, user_id, connection_id, viewers_count, last_update_time, frame_queue}}
-# frames_buffer là list các frame đã swap (giữ tối đa 10 frames để giảm memory)
-# viewers_count: số người đang xem stream
-# last_update_time: thời gian frame cuối cùng được cập nhật
-# frame_queue: asyncio.Queue để push frame mới đến viewers (real-time)
+# Dictionary để lưu stream rooms - SFU model
+stream_rooms: Dict[str, Dict] = {}  # {room_id: {created_at, user_id, connection_id, stream_output, viewers}}
+# stream_output: asyncio.Queue để broadcast frame đến tất cả viewers (SFU model)
+# viewers: list các viewer connections (asyncio.Queue cho mỗi viewer)
 
 count = 0
 processed_frame = None
@@ -220,12 +218,11 @@ async def clear_faces():
 @app.get("/watch/{room_id}")
 async def watch_stream(room_id: str):
     """
-    Endpoint để xem stream video sau khi swap face
-    Trả về MJPEG stream (Motion JPEG) - có thể xem bằng browser hoặc VLC
+    Endpoint để xem stream video sau khi swap face (SFU model)
+    Viewer subscribe vào stream output của room
     """
     # Kiểm tra room có tồn tại không
     if room_id not in stream_rooms:
-        # Trả về HTML với thông báo thay vì 404
         html_content = """
         <!DOCTYPE html>
         <html>
@@ -244,41 +241,22 @@ async def watch_stream(room_id: str):
         """
         return HTMLResponse(content=html_content, status_code=404)
     
-    # Tăng số lượng viewers
+    # Tạo viewer queue để nhận frame từ stream output (SFU)
+    viewer_queue = asyncio.Queue(maxsize=1)
     room = stream_rooms[room_id]
-    room["viewers_count"] = room.get("viewers_count", 0) + 1
-    print(f"New viewer joined room {room_id}, total viewers: {room['viewers_count']}")
+    
+    # Thêm viewer vào room
+    room["viewers"].append(viewer_queue)
+    viewer_count = len(room["viewers"])
+    print(f"New viewer joined room {room_id}, total viewers: {viewer_count}")
     
     async def generate_frames():
-        """Generator để tạo MJPEG stream - real-time như stream gốc"""
+        """Generator để tạo MJPEG stream - SFU model"""
         frame_count = 0
         no_frame_count = 0
         max_no_frame = 150  # Nếu không có frame trong 5 giây thì dừng
         
         try:
-            room_info = stream_rooms[room_id]
-            frame_queue = room_info.get("frame_queue")
-            
-            if not frame_queue:
-                # Fallback: dùng polling nếu không có queue
-                while True:
-                    if room_id not in stream_rooms:
-                        break
-                    room_info = stream_rooms[room_id]
-                    last_frame = room_info.get("last_frame")
-                    if last_frame is not None:
-                        try:
-                            success, buffer = cv2.imencode('.jpg', last_frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
-                            if success and buffer is not None:
-                                frame_bytes = buffer.tobytes()
-                                yield (b'--frame\r\n'
-                                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                        except:
-                            pass
-                    await asyncio.sleep(0.033)
-                return
-            
-            # Dùng queue để nhận frame mới ngay lập tức (real-time)
             while True:
                 # Kiểm tra room còn tồn tại không
                 if room_id not in stream_rooms:
@@ -295,22 +273,18 @@ async def watch_stream(room_id: str):
                         break
                 
                 try:
-                    # Đợi frame mới từ queue với timeout ngắn (real-time)
-                    # Nếu có frame mới, gửi ngay lập tức
+                    # Đợi frame mới từ viewer queue (SFU - frame được broadcast từ stream output)
                     try:
-                        frame_to_send = await asyncio.wait_for(frame_queue.get(), timeout=0.1)
+                        frame_to_send = await asyncio.wait_for(viewer_queue.get(), timeout=0.1)
                         no_frame_count = 0  # Reset counter
                     except asyncio.TimeoutError:
-                        # Không có frame mới trong 100ms, thử lấy last_frame
-                        last_frame = room_info.get("last_frame")
-                        if last_frame is not None:
-                            frame_to_send = last_frame
-                        else:
-                            no_frame_count += 1
-                            if no_frame_count > max_no_frame:
-                                break
-                            await asyncio.sleep(0.033)
-                            continue
+                        # Không có frame mới trong 100ms
+                        no_frame_count += 1
+                        if no_frame_count > max_no_frame:
+                            print(f"No frames received for room {room_id} for too long, stopping stream")
+                            break
+                        await asyncio.sleep(0.033)
+                        continue
                     
                     # Encode và gửi frame ngay lập tức
                     if frame_to_send is not None:
@@ -334,10 +308,12 @@ async def watch_stream(room_id: str):
         except Exception as e:
             print(f"Error in generate_frames for room {room_id}: {e}")
         finally:
-            # Giảm số lượng viewers khi disconnect
+            # Xóa viewer khỏi room khi disconnect
             if room_id in stream_rooms:
-                stream_rooms[room_id]["viewers_count"] = max(0, stream_rooms[room_id].get("viewers_count", 1) - 1)
-                print(f"Viewer left room {room_id}, remaining viewers: {stream_rooms[room_id]['viewers_count']}")
+                if viewer_queue in stream_rooms[room_id]["viewers"]:
+                    stream_rooms[room_id]["viewers"].remove(viewer_queue)
+                viewer_count = len(stream_rooms[room_id]["viewers"])
+                print(f"Viewer left room {room_id}, remaining viewers: {viewer_count}")
     
     return StreamingResponse(
         generate_frames(),
@@ -565,19 +541,17 @@ async def websocket_video(websocket: WebSocket):
                 if user_id:
                     print(f"WebSocket connection - User ID: {user_id}")
                     
-                    # Tạo room_id cho stream
+                    # Tạo room_id cho stream (SFU model)
                     room_id = str(uuid.uuid4())
-                    # Tạo queue để push frame mới đến viewers (real-time)
-                    frame_queue = asyncio.Queue(maxsize=2)  # Chỉ giữ 2 frames để giảm delay
+                    # Tạo stream output để broadcast frame đến viewers
+                    stream_output = asyncio.Queue(maxsize=1)  # Chỉ giữ 1 frame mới nhất (SFU)
                     stream_rooms[room_id] = {
-                        "frames_buffer": [],
-                        "last_frame": None,
                         "created_at": datetime.now(),
                         "user_id": user_id,
                         "connection_id": connection_id,
-                        "viewers_count": 0,
-                        "room_id": room_id,  # Lưu room_id để dễ tìm
-                        "frame_queue": frame_queue  # Queue để push frame real-time
+                        "room_id": room_id,
+                        "stream_output": stream_output,  # Stream output để broadcast
+                        "viewers": []  # List các viewer queues
                     }
                     
                     # Lưu room_id vào active_recordings để dễ tìm
@@ -666,41 +640,44 @@ async def websocket_video(websocket: WebSocket):
                                 room_id_to_update = rid
                                 break
                     
-                    # Cập nhật frame vào room - push frame mới ngay lập tức (real-time)
+                    # Broadcast frame đến stream output (SFU model)
                     if room_id_to_update and room_id_to_update in stream_rooms:
                         try:
                             room_info = stream_rooms[room_id_to_update]
-                            viewers = room_info.get("viewers_count", 0)
+                            viewers = room_info.get("viewers", [])
                             
-                            if viewers > 0:
-                                # Có người xem, push frame mới vào queue ngay lập tức
-                                frame_queue = room_info.get("frame_queue")
-                                if frame_queue:
-                                    # Copy frame để tránh race condition
-                                    frame_copy = swapped_frame.copy()
-                                    # Push frame mới vào queue (non-blocking)
+                            if len(viewers) > 0:
+                                # Có người xem, broadcast frame đến tất cả viewers (SFU)
+                                # Copy frame một lần để broadcast đến tất cả viewers
+                                frame_copy = swapped_frame.copy()
+                                
+                                # Broadcast frame đến tất cả viewer queues
+                                for viewer_queue in viewers:
                                     try:
                                         # Nếu queue đầy, xóa frame cũ và thêm frame mới
-                                        if frame_queue.full():
+                                        if viewer_queue.full():
                                             try:
-                                                frame_queue.get_nowait()  # Xóa frame cũ
+                                                viewer_queue.get_nowait()  # Xóa frame cũ
                                             except:
                                                 pass
-                                        frame_queue.put_nowait(frame_copy)  # Thêm frame mới
+                                        viewer_queue.put_nowait(frame_copy)  # Broadcast frame mới
                                     except:
-                                        pass  # Queue đầy hoặc lỗi, bỏ qua
+                                        pass  # Queue đầy hoặc lỗi, bỏ qua viewer này
                                 
-                                # Cũng cập nhật last_frame để fallback
-                                if viewers > 1:
-                                    # Nhiều viewers, cần copy
-                                    room_info["last_frame"] = swapped_frame.copy()
-                                else:
-                                    # 1 viewer, không cần copy
-                                    room_info["last_frame"] = swapped_frame
-                                
-                                room_info["last_update_time"] = time.time()
+                                # Cũng push vào stream_output để đảm bảo
+                                stream_output = room_info.get("stream_output")
+                                if stream_output:
+                                    try:
+                                        if stream_output.full():
+                                            try:
+                                                stream_output.get_nowait()
+                                            except:
+                                                pass
+                                        stream_output.put_nowait(frame_copy)
+                                    except:
+                                        pass
                         except Exception as e:
-                            print(f"Error updating frame for room {room_id_to_update}: {e}")
+                            print(f"Error broadcasting frame for room {room_id_to_update}: {e}")
                     
                     # Encode swapped frame to base64 JPEG
                     _, buffer = cv2.imencode('.jpg', swapped_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -744,11 +721,11 @@ async def websocket_video(websocket: WebSocket):
             # Không xóa ngay, sẽ xóa khi call API stop-recording
             print(f"Stopped recording for connection {connection_id}")
         
-        # Xóa stream room khi disconnect
-        # Chỉ xóa nếu không còn người xem
+        # Xóa stream room khi disconnect (SFU model)
         for room_id, room_info in list(stream_rooms.items()):
             if room_info.get("connection_id") == connection_id:
-                viewers_count = room_info.get("viewers_count", 0)
+                viewers = room_info.get("viewers", [])
+                viewers_count = len(viewers)
                 if viewers_count == 0:
                     # Không còn người xem, xóa room ngay
                     del stream_rooms[room_id]
