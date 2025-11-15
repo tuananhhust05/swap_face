@@ -67,10 +67,10 @@ os.makedirs(TEMP_VIDEO_DIR, exist_ok=True)
 # Dictionary để lưu VideoWriter và thông tin cho mỗi websocket connection
 active_recordings: Dict[str, Dict] = {}  # {connection_id: {video_writer, user_id, temp_path, width, height, fps}}
 
-# Dictionary để lưu stream rooms - SFU model
-stream_rooms: Dict[str, Dict] = {}  # {room_id: {created_at, user_id, connection_id, stream_output, viewers}}
-# stream_output: asyncio.Queue để broadcast frame đến tất cả viewers (SFU model)
-# viewers: list các viewer connections (asyncio.Queue cho mỗi viewer)
+# Dictionary để lưu stream rooms - SFU model tối ưu
+stream_rooms: Dict[str, Dict] = {}  # {room_id: {created_at, user_id, connection_id, last_encoded_frame, viewers}}
+# last_encoded_frame: bytes của frame đã encode sẵn (JPEG) - shared cho tất cả viewers
+# viewers: list các viewer events (mỗi viewer có event riêng để signal frame mới)
 
 count = 0
 processed_frame = None
@@ -215,6 +215,371 @@ async def clear_faces():
     return {"success": True, "message": "All faces cleared"}
 
 
+@app.get("/view/{room_id}")
+async def view_stream_page(room_id: str, request: Request):
+    """
+    Endpoint để hiển thị trang viewer với giao diện đẹp và nút chia sẻ
+    """
+    # Kiểm tra room có tồn tại không
+    if room_id not in stream_rooms:
+        html_content = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>Stream Not Found - Vtoobe</title>
+            <style>
+                body { 
+                    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+                    text-align: center; 
+                    padding: 50px;
+                    background: #f5f5f7;
+                }
+                .error { color: #ff3b30; font-size: 24px; margin-bottom: 16px; }
+            </style>
+        </head>
+        <body>
+            <div class="error">Stream not found or expired</div>
+            <p>The stream room may have been closed or does not exist.</p>
+        </body>
+        </html>
+        """
+        return HTMLResponse(content=html_content, status_code=404)
+    
+    # Lấy thông tin room
+    room = stream_rooms[room_id]
+    base_url = str(request.base_url).rstrip('/')
+    share_url = f"{base_url}/view/{room_id}"
+    
+    # Tạo HTML page với giao diện đẹp
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Live Stream - Vtoobe</title>
+        <meta property="og:title" content="Live Face Swap Stream - Vtoobe">
+        <meta property="og:description" content="Watch real-time face swap stream">
+        <meta property="og:image" content="{request.base_url}watch/{room_id}">
+        <meta property="og:url" content="{share_url}">
+        <meta name="twitter:card" content="summary_large_image">
+        <meta name="twitter:title" content="Live Face Swap Stream - Vtoobe">
+        <meta name="twitter:description" content="Watch real-time face swap stream">
+        <style>
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+            
+            * {{
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }}
+            
+            :root {{
+                --apple-bg: #f5f5f7;
+                --apple-card: #ffffff;
+                --apple-text: #1d1d1f;
+                --apple-text-secondary: #86868b;
+                --apple-blue: #0071e3;
+                --apple-blue-hover: #0077ed;
+                --apple-border: #d2d2d7;
+                --apple-success: #34c759;
+                --apple-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+                --apple-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
+            }}
+            
+            body {{
+                font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+                background: var(--apple-bg);
+                color: var(--apple-text);
+                min-height: 100vh;
+                padding: 0;
+                margin: 0;
+                line-height: 1.5;
+            }}
+            
+            .header {{
+                background: var(--apple-card);
+                border-bottom: 1px solid var(--apple-border);
+                padding: 20px 0;
+                text-align: center;
+                position: sticky;
+                top: 0;
+                z-index: 100;
+                backdrop-filter: blur(20px);
+                background: rgba(255, 255, 255, 0.8);
+            }}
+            
+            .logo {{
+                font-size: 32px;
+                font-weight: 600;
+                letter-spacing: -0.5px;
+                color: var(--apple-text);
+                margin: 0;
+            }}
+            
+            .tagline {{
+                font-size: 14px;
+                color: var(--apple-text-secondary);
+                margin-top: 4px;
+                font-weight: 400;
+            }}
+            
+            .container {{
+                max-width: 1200px;
+                margin: 0 auto;
+                padding: 40px 20px;
+            }}
+            
+            .stream-container {{
+                background: var(--apple-card);
+                border-radius: 18px;
+                padding: 30px;
+                box-shadow: var(--apple-shadow);
+                border: 1px solid var(--apple-border);
+                margin-bottom: 24px;
+            }}
+            
+            .stream-box {{
+                position: relative;
+                background: #000;
+                border-radius: 18px;
+                overflow: hidden;
+                aspect-ratio: 16/9;
+                box-shadow: var(--apple-shadow-lg);
+                margin-bottom: 24px;
+            }}
+            
+            .stream-box img {{
+                width: 100%;
+                height: 100%;
+                object-fit: contain;
+            }}
+            
+            .stream-status {{
+                position: absolute;
+                top: 16px;
+                left: 16px;
+                background: rgba(0, 0, 0, 0.7);
+                color: white;
+                padding: 8px 16px;
+                border-radius: 20px;
+                font-size: 14px;
+                font-weight: 500;
+                display: flex;
+                align-items: center;
+                gap: 8px;
+                backdrop-filter: blur(10px);
+            }}
+            
+            .status-dot {{
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: var(--apple-success);
+                animation: pulse 2s infinite;
+            }}
+            
+            @keyframes pulse {{
+                0%, 100% {{ opacity: 1; }}
+                50% {{ opacity: 0.5; }}
+            }}
+            
+            .share-section {{
+                background: var(--apple-card);
+                border-radius: 18px;
+                padding: 30px;
+                box-shadow: var(--apple-shadow);
+                border: 1px solid var(--apple-border);
+            }}
+            
+            .share-title {{
+                font-size: 20px;
+                font-weight: 600;
+                margin-bottom: 20px;
+                color: var(--apple-text);
+            }}
+            
+            .share-buttons {{
+                display: flex;
+                gap: 12px;
+                flex-wrap: wrap;
+                justify-content: center;
+            }}
+            
+            .share-btn {{
+                display: inline-flex;
+                align-items: center;
+                gap: 8px;
+                padding: 12px 24px;
+                border-radius: 12px;
+                font-size: 15px;
+                font-weight: 500;
+                text-decoration: none;
+                transition: all 0.2s ease;
+                border: none;
+                cursor: pointer;
+                font-family: inherit;
+            }}
+            
+            .share-btn:hover {{
+                transform: translateY(-2px);
+                box-shadow: var(--apple-shadow);
+            }}
+            
+            .share-btn-facebook {{
+                background: #1877f2;
+                color: white;
+            }}
+            
+            .share-btn-facebook:hover {{
+                background: #166fe5;
+            }}
+            
+            .share-btn-twitter {{
+                background: #000000;
+                color: white;
+            }}
+            
+            .share-btn-twitter:hover {{
+                background: #333333;
+            }}
+            
+            .share-btn-tiktok {{
+                background: #000000;
+                color: white;
+            }}
+            
+            .share-btn-tiktok:hover {{
+                background: #333333;
+            }}
+            
+            .share-btn-copy {{
+                background: var(--apple-blue);
+                color: white;
+            }}
+            
+            .share-btn-copy:hover {{
+                background: var(--apple-blue-hover);
+            }}
+            
+            .copy-success {{
+                display: none;
+                margin-top: 12px;
+                padding: 12px;
+                background: rgba(52, 199, 89, 0.1);
+                color: var(--apple-success);
+                border-radius: 8px;
+                font-size: 14px;
+            }}
+            
+            .copy-success.show {{
+                display: block;
+            }}
+            
+            @media (max-width: 768px) {{
+                .share-buttons {{
+                    flex-direction: column;
+                }}
+                
+                .share-btn {{
+                    width: 100%;
+                    justify-content: center;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="header">
+            <h1 class="logo">Vtoobe</h1>
+            <p class="tagline">Real-Time Face Swap Technology</p>
+        </div>
+        
+        <div class="container">
+            <div class="stream-container">
+                <div class="stream-box">
+                    <div class="stream-status">
+                        <span class="status-dot"></span>
+                        <span>LIVE</span>
+                    </div>
+                    <img id="streamImage" src="/watch/{room_id}" alt="Live Stream">
+                </div>
+            </div>
+            
+            <div class="share-section">
+                <h2 class="share-title">Share this stream</h2>
+                <div class="share-buttons">
+                    <a href="https://www.facebook.com/sharer/sharer.php?u={share_url}" 
+                       target="_blank" 
+                       class="share-btn share-btn-facebook"
+                       onclick="window.open(this.href, 'facebook-share', 'width=600,height=400'); return false;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
+                        </svg>
+                        Share on Facebook
+                    </a>
+                    
+                    <a href="https://twitter.com/intent/tweet?url={share_url}&text=Watch%20this%20amazing%20live%20face%20swap%20stream!" 
+                       target="_blank" 
+                       class="share-btn share-btn-twitter"
+                       onclick="window.open(this.href, 'twitter-share', 'width=600,height=400'); return false;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H5.08l4.793 6.588h.002L18.244 2.25z"/>
+                        </svg>
+                        Share on X
+                    </a>
+                    
+                    <a href="https://www.tiktok.com/upload?lang=en" 
+                       target="_blank" 
+                       class="share-btn share-btn-tiktok"
+                       onclick="window.open(this.href, 'tiktok-share', 'width=600,height=400'); return false;">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
+                        </svg>
+                        Share on TikTok
+                    </a>
+                    
+                    <button class="share-btn share-btn-copy" onclick="copyStreamLink()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                        </svg>
+                        Copy Link
+                    </button>
+                </div>
+                <div class="copy-success" id="copySuccess">✓ Link copied to clipboard!</div>
+            </div>
+        </div>
+        
+        <script>
+            const streamUrl = '{share_url}';
+            
+            function copyStreamLink() {{
+                navigator.clipboard.writeText(streamUrl).then(() => {{
+                    const success = document.getElementById('copySuccess');
+                    success.classList.add('show');
+                    setTimeout(() => {{
+                        success.classList.remove('show');
+                    }}, 3000);
+                }}).catch(err => {{
+                    console.error('Failed to copy:', err);
+                    alert('Failed to copy link. Please copy manually: ' + streamUrl);
+                }});
+            }}
+            
+            // Handle stream image errors
+            const streamImage = document.getElementById('streamImage');
+            streamImage.onerror = function() {{
+                this.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAwIiBoZWlnaHQ9IjQwMCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB3aWR0aD0iMTAwJSIgaGVpZ2h0PSIxMDAlIiBmaWxsPSIjMzMzIi8+PHRleHQgeD0iNTAlIiB5PSI1MCUiIGZvbnQtc2l6ZT0iMjQiIGZpbGw9IndoaXRlIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIiBkeT0iLjNlbSI+U3RyZWFtIGVuZGVkPC90ZXh0Pjwvc3ZnPg==';
+            }};
+        </script>
+    </body>
+    </html>
+    """
+    return HTMLResponse(content=html_content)
+
+
 @app.get("/watch/{room_id}")
 async def watch_stream(room_id: str):
     """
@@ -241,13 +606,12 @@ async def watch_stream(room_id: str):
         """
         return HTMLResponse(content=html_content, status_code=404)
     
-    # Tạo viewer queue để nhận frame từ stream output (SFU - real-time)
-    # Queue size = 1 để chỉ giữ frame mới nhất, giảm delay tối đa
-    viewer_queue = asyncio.Queue(maxsize=1)
+    # Tạo viewer event riêng để nhận signal frame mới (SFU tối ưu - không copy, không queue)
     room = stream_rooms[room_id]
+    viewer_event = asyncio.Event()  # Mỗi viewer có event riêng
     
     # Thêm viewer vào room
-    room["viewers"].append(viewer_queue)
+    room["viewers"].append(viewer_event)
     viewer_count = len(room["viewers"])
     print(f"New viewer joined room {room_id}, total viewers: {viewer_count}")
     
@@ -277,26 +641,23 @@ async def watch_stream(room_id: str):
                         break
                 
                 try:
-                    # Đợi frame mới từ viewer queue (real-time, không timeout)
+                    # Đợi signal frame mới (real-time, không timeout)
                     # Frame được broadcast ngay sau khi swap (y hệt stream gốc)
-                    frame_to_send = await viewer_queue.get()
+                    await viewer_event.wait()
                     
-                    # Encode và gửi frame ngay lập tức - Y HỆT STREAM GỐC
-                    # Quality 85 giống hệt stream gốc (line 667 trong websocket handler)
-                    if frame_to_send is not None:
-                        try:
-                            if isinstance(frame_to_send, np.ndarray) and frame_to_send.size > 0:
-                                # Encode với quality 85 - Y HỆT STREAM GỐC
-                                success, buffer = cv2.imencode('.jpg', frame_to_send, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                                if success and buffer is not None and buffer.size > 0:
-                                    frame_bytes = buffer.tobytes()
-                                    
-                                    # MJPEG format: boundary + frame (gửi ngay, không delay)
-                                    yield (b'--frame\r\n'
-                                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                                    frame_count += 1
-                        except Exception as e:
-                            print(f"Error encoding frame for room {room_id}: {e}")
+                    # Lấy frame đã encode sẵn (shared, không copy, không encode lại)
+                    room_info = stream_rooms[room_id]
+                    frame_bytes = room_info.get("last_encoded_frame")
+                    
+                    # Reset event để đợi frame tiếp theo
+                    viewer_event.clear()
+                    
+                    # Gửi frame ngay lập tức - Y HỆT STREAM GỐC (đã encode sẵn, không delay)
+                    if frame_bytes is not None and len(frame_bytes) > 0:
+                        # MJPEG format: boundary + frame (gửi ngay, không delay, không encode)
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                        frame_count += 1
                 
                 except asyncio.CancelledError:
                     # Connection closed
@@ -309,8 +670,8 @@ async def watch_stream(room_id: str):
         finally:
             # Xóa viewer khỏi room khi disconnect
             if room_id in stream_rooms:
-                if viewer_queue in stream_rooms[room_id]["viewers"]:
-                    stream_rooms[room_id]["viewers"].remove(viewer_queue)
+                if viewer_event in stream_rooms[room_id]["viewers"]:
+                    stream_rooms[room_id]["viewers"].remove(viewer_event)
                 viewer_count = len(stream_rooms[room_id]["viewers"])
                 print(f"Viewer left room {room_id}, remaining viewers: {viewer_count}")
     
@@ -540,17 +901,15 @@ async def websocket_video(websocket: WebSocket):
                 if user_id:
                     print(f"WebSocket connection - User ID: {user_id}")
                     
-                    # Tạo room_id cho stream (SFU model)
+                    # Tạo room_id cho stream (SFU model tối ưu - không copy, encode một lần)
                     room_id = str(uuid.uuid4())
-                    # Tạo stream output để broadcast frame đến viewers
-                    stream_output = asyncio.Queue(maxsize=1)  # Chỉ giữ 1 frame mới nhất (SFU)
                     stream_rooms[room_id] = {
                         "created_at": datetime.now(),
                         "user_id": user_id,
                         "connection_id": connection_id,
                         "room_id": room_id,
-                        "stream_output": stream_output,  # Stream output để broadcast
-                        "viewers": []  # List các viewer queues
+                        "last_encoded_frame": None,  # JPEG bytes đã encode sẵn (shared)
+                        "viewers": []  # List các viewer events (mỗi viewer có event riêng)
                     }
                     
                     # Lưu room_id vào active_recordings để dễ tìm
@@ -561,7 +920,7 @@ async def websocket_video(websocket: WebSocket):
                     await websocket.send_json({
                         "type": "room_created",
                         "room_id": room_id,
-                        "watch_url": f"/watch/{room_id}",
+                        "watch_url": f"/view/{room_id}",  # Dùng /view thay vì /watch để có giao diện đẹp
                         "message": "Stream room created"
                     })
                     print(f"Created stream room: {room_id} for user: {user_id}")
@@ -639,37 +998,32 @@ async def websocket_video(websocket: WebSocket):
                                 room_id_to_update = rid
                                 break
                     
-                    # Broadcast frame đến stream output ngay lập tức - Y HỆT STREAM GỐC
+                    # Encode swapped frame một lần (dùng cho cả streamer và viewers)
+                    _, buffer = cv2.imencode('.jpg', swapped_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    frame_bytes = buffer.tobytes()  # JPEG bytes
+                    swapped_base64 = base64.b64encode(frame_bytes).decode('utf-8')
+                    
+                    # Broadcast frame đã encode đến viewers ngay lập tức - Y HỆT STREAM GỐC
                     # Frame được broadcast ngay sau khi swap, trước khi gửi về streamer
+                    # Tối ưu: encode một lần, share bytes cho tất cả viewers (không copy frame)
                     if room_id_to_update and room_id_to_update in stream_rooms:
                         try:
                             room_info = stream_rooms[room_id_to_update]
                             viewers = room_info.get("viewers", [])
                             
                             if len(viewers) > 0:
-                                # Có người xem, broadcast frame ngay lập tức (y hệt stream gốc)
-                                # Broadcast frame đến tất cả viewer queues (non-blocking, real-time)
-                                # Mỗi viewer nhận frame copy riêng để tránh race condition
-                                for viewer_queue in viewers:
+                                # Lưu frame đã encode sẵn (shared cho tất cả viewers)
+                                room_info["last_encoded_frame"] = frame_bytes
+                                
+                                # Signal tất cả viewers có frame mới (non-blocking, real-time)
+                                # Mỗi viewer có event riêng, signal tất cả cùng lúc
+                                for viewer_event in viewers:
                                     try:
-                                        # Xóa frame cũ nếu có (chỉ giữ frame mới nhất)
-                                        if viewer_queue.full():
-                                            try:
-                                                viewer_queue.get_nowait()  # Xóa frame cũ
-                                            except:
-                                                pass
-                                        # Push frame mới ngay lập tức (non-blocking)
-                                        # Copy riêng cho mỗi viewer để đảm bảo an toàn
-                                        viewer_queue.put_nowait(swapped_frame.copy())
+                                        viewer_event.set()  # Signal viewer này có frame mới
                                     except:
-                                        # Queue đầy hoặc lỗi, bỏ qua viewer này (không block stream)
-                                        pass
+                                        pass  # Viewer đã disconnect, bỏ qua
                         except Exception as e:
                             print(f"Error broadcasting frame for room {room_id_to_update}: {e}")
-                    
-                    # Encode swapped frame to base64 JPEG
-                    _, buffer = cv2.imencode('.jpg', swapped_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
-                    swapped_base64 = base64.b64encode(buffer).decode('utf-8')
                     
                     # Gửi frame đã swap về client
                     await websocket.send_json({

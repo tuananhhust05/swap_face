@@ -516,7 +516,7 @@
         <div class="error-message" id="errorMessage"></div>
         
         <div class="stream-link-box" id="streamLinkBox">
-            <div class="stream-link-title">🔗 Stream Link (Share để người khác xem)</div>
+            <div class="stream-link-title">🔗 Stream Link (Share for others to watch)</div>
             <div class="stream-link-url" id="streamLinkUrl"></div>
             <button class="copy-btn" onclick="copyStreamLink()">📋 Copy Link</button>
         </div>
@@ -536,7 +536,7 @@
             lastFrameTime: 0
         };
 
-        // Decode JWT token để lấy user_id (decode ở client)
+        // Decode JWT token to get user_id (decode on client side)
         function decodeJWT(token) {
             try {
                 const base64Url = token.split('.')[1];
@@ -677,7 +677,7 @@
             const streamLinkUrl = document.getElementById('streamLinkUrl');
             streamLinkUrl.textContent = url;
             streamLinkBox.classList.add('show');
-            // Lưu vào global để copy
+            // Save to global for copying
             window.currentStreamUrl = url;
         }
 
@@ -733,7 +733,7 @@
                     displayFrame(data.frame);
                     updateStats(data.timestamp);
                 } else if (data.type === 'room_created') {
-                    // Hiển thị link xem stream
+                    // Display stream watch link
                     const watchUrl = window.location.origin + data.watch_url;
                     showStreamLink(watchUrl, data.room_id);
                 } else if (data.type === 'error') {
@@ -864,7 +864,7 @@
             document.getElementById('latency').textContent = '0ms';
             document.getElementById('frames').textContent = '0';
 
-            // Gọi API để lưu video nếu đang recording và có user_id
+            // Call API to save video if recording and has user_id
             if (isRecording && userId) {
                 try {
                     updateStatus('Saving video...', 'processing');
