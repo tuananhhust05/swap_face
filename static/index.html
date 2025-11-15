@@ -83,6 +83,97 @@
             border: 1px solid var(--apple-border);
         }
 
+        .duration-progress-container {
+            background: rgba(0, 113, 227, 0.05);
+            border: 1px solid rgba(0, 113, 227, 0.2);
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 30px;
+        }
+
+        .duration-info {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-bottom: 12px;
+            font-size: 15px;
+        }
+
+        .duration-label {
+            color: var(--apple-text-secondary);
+            font-weight: 500;
+        }
+
+        .duration-value {
+            color: var(--apple-text);
+            font-weight: 600;
+            font-size: 18px;
+        }
+
+        .duration-limit {
+            color: var(--apple-text-secondary);
+            font-size: 15px;
+        }
+
+        .progress-bar-wrapper {
+            width: 100%;
+            height: 12px;
+            background: rgba(0, 113, 227, 0.1);
+            border-radius: 6px;
+            overflow: hidden;
+            margin-bottom: 12px;
+        }
+
+        .progress-bar {
+            width: 100%;
+            height: 100%;
+            position: relative;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--apple-blue) 0%, #0077ed 100%);
+            border-radius: 6px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+
+        .progress-fill.warning {
+            background: linear-gradient(90deg, #ff9500 0%, #ff8800 100%);
+        }
+
+        .progress-fill.error {
+            background: linear-gradient(90deg, var(--apple-error) 0%, #ff3b30 100%);
+        }
+
+        .duration-warning-upload {
+            padding: 12px 16px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            text-align: center;
+            display: none;
+        }
+
+        .duration-warning-upload.error {
+            background: rgba(255, 59, 48, 0.1);
+            color: var(--apple-error);
+            border: 1px solid rgba(255, 59, 48, 0.3);
+        }
+
+        .duration-warning-upload.warning {
+            background: rgba(255, 204, 0, 0.1);
+            color: #ff9500;
+            border: 1px solid rgba(255, 204, 0, 0.3);
+        }
+
+        .file-input-label.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            pointer-events: none;
+        }
+
         .upload-icon {
             width: 80px;
             height: 80px;
@@ -592,12 +683,27 @@
     <div class="container">
         <!-- Upload Section -->
         <div class="upload-section" id="uploadSection">
+            <!-- Total Duration Progress Bar -->
+            <div class="duration-progress-container">
+                <div class="duration-info">
+                    <span class="duration-label">Total Duration Used:</span>
+                    <span class="duration-value" id="totalDurationDisplay">00:00:00</span>
+                    <span class="duration-limit">/ 01:00:00</span>
+                </div>
+                <div class="progress-bar-wrapper">
+                    <div class="progress-bar" id="durationProgressBar">
+                        <div class="progress-fill" id="durationProgressFill"></div>
+                    </div>
+                </div>
+                <div class="duration-warning-upload" id="durationWarningUpload" style="display: none;"></div>
+            </div>
+            
             <div class="upload-icon">📤</div>
             <h2>Upload Face Image</h2>
             <p>Select an image containing the face you want to use for face swapping. Make sure the face is clear and well-lit.</p>
             
             <div class="file-input-wrapper">
-                <label for="faceInput" class="file-input-label">
+                <label for="faceInput" class="file-input-label" id="faceInputLabel">
                     Choose & Upload Image
                 </label>
                 <input type="file" id="faceInput" accept="image/*">
@@ -741,19 +847,63 @@
                 const data = await response.json();
                 
                 if (data.success) {
-                    // Hiển thị tổng thời lượng
+                    const totalSeconds = data.total_duration_seconds || 0;
+                    const limitSeconds = 3600; // 1 giờ = 3600 giây
+                    const percentage = Math.min((totalSeconds / limitSeconds) * 100, 100);
+                    const remainingSeconds = Math.max(0, limitSeconds - totalSeconds);
+                    const remainingFormatted = formatDuration(remainingSeconds);
+                    
+                    // Cập nhật hiển thị total duration ở upload section
+                    const totalDurationDisplay = document.getElementById('totalDurationDisplay');
+                    if (totalDurationDisplay) {
+                        totalDurationDisplay.textContent = data.total_duration_formatted || '00:00:00';
+                    }
+                    
+                    // Cập nhật progress bar
+                    const progressFill = document.getElementById('durationProgressFill');
+                    if (progressFill) {
+                        progressFill.style.width = percentage + '%';
+                        if (totalSeconds >= limitSeconds) {
+                            progressFill.className = 'progress-fill error';
+                        } else if (totalSeconds >= limitSeconds * 0.9) {
+                            progressFill.className = 'progress-fill warning';
+                        } else {
+                            progressFill.className = 'progress-fill';
+                        }
+                    }
+                    
+                    // Hiển thị cảnh báo ở upload section
+                    const warningUpload = document.getElementById('durationWarningUpload');
+                    if (warningUpload) {
+                        if (totalSeconds >= limitSeconds) {
+                            warningUpload.textContent = '⚠️ You have reached the 1 hour limit. Cannot upload or record.';
+                            warningUpload.style.display = 'block';
+                            warningUpload.className = 'duration-warning-upload error';
+                            // Disable upload button
+                            const faceInput = document.getElementById('faceInput');
+                            const faceInputLabel = document.getElementById('faceInputLabel');
+                            if (faceInput) {
+                                faceInput.disabled = true;
+                            }
+                            if (faceInputLabel) {
+                                faceInputLabel.classList.add('disabled');
+                            }
+                        } else if (totalSeconds >= limitSeconds * 0.9) {
+                            warningUpload.textContent = `⚠️ Warning: Only ${remainingFormatted} remaining (1 hour limit)`;
+                            warningUpload.style.display = 'block';
+                            warningUpload.className = 'duration-warning-upload warning';
+                        } else {
+                            warningUpload.style.display = 'none';
+                        }
+                    }
+                    
+                    // Cập nhật total duration ở stats section (nếu có)
                     const totalDurationElement = document.getElementById('totalDuration');
                     if (totalDurationElement) {
                         totalDurationElement.textContent = data.total_duration_formatted || '00:00:00';
                     }
                     
-                    // Kiểm tra giới hạn 1 giờ (3600 giây) cho free tier
-                    const totalSeconds = data.total_duration_seconds || 0;
-                    const limitSeconds = 3600; // 1 giờ = 3600 giây
-                    const remainingSeconds = Math.max(0, limitSeconds - totalSeconds);
-                    const remainingFormatted = formatDuration(remainingSeconds);
-                    
-                    // Hiển thị cảnh báo nếu đã đạt hoặc gần đạt giới hạn
+                    // Cập nhật cảnh báo ở stats section (nếu có)
                     const warningElement = document.getElementById('durationWarning');
                     if (warningElement) {
                         if (totalSeconds >= limitSeconds) {
@@ -767,7 +917,6 @@
                                 startBtn.title = 'You have reached the 1 hour recording limit';
                             }
                         } else if (totalSeconds >= limitSeconds * 0.9) {
-                            // Cảnh báo khi còn 10% (6 phút)
                             warningElement.textContent = `⚠️ Warning: Only ${remainingFormatted} remaining (1 hour limit)`;
                             warningElement.style.display = 'block';
                             warningElement.className = 'duration-warning warning';
