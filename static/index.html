@@ -400,6 +400,31 @@
             font-size: 15px;
         }
 
+        .duration-warning {
+            background: rgba(255, 204, 0, 0.1);
+            color: #ff9500;
+            padding: 16px 20px;
+            border-radius: 12px;
+            margin: 20px 0;
+            border: 1px solid rgba(255, 204, 0, 0.3);
+            font-size: 15px;
+            font-weight: 500;
+            text-align: center;
+            display: none;
+        }
+
+        .duration-warning.error {
+            background: rgba(255, 59, 48, 0.1);
+            color: var(--apple-error);
+            border: 1px solid rgba(255, 59, 48, 0.3);
+        }
+
+        .duration-warning.warning {
+            background: rgba(255, 204, 0, 0.1);
+            color: #ff9500;
+            border: 1px solid rgba(255, 204, 0, 0.3);
+        }
+
         .stream-link-box {
             background: linear-gradient(135deg, rgba(0, 113, 227, 0.05) 0%, rgba(0, 113, 227, 0.1) 100%);
             border: 1px solid rgba(0, 113, 227, 0.2);
@@ -623,6 +648,8 @@
                     <div class="stat-value" id="totalDuration">00:00:00</div>
                 </div>
             </div>
+            
+            <div class="duration-warning" id="durationWarning" style="display: none;"></div>
         </div>
 
         <div class="error-message" id="errorMessage"></div>
@@ -701,12 +728,8 @@
         // Gọi hàm này khi page load
         getUserIdFromToken();
         
-        // Load tổng thời lượng video khi có userId
+        // Load tổng thời lượng video ngay khi vào web
         async function loadTotalDuration() {
-            if (!userId) {
-                return;
-            }
-            
             const urlParams = new URLSearchParams(window.location.search);
             const token = urlParams.get('token');
             if (!token) {
@@ -717,11 +740,40 @@
                 const response = await fetch(`/api/total-duration?token=${encodeURIComponent(token)}`);
                 const data = await response.json();
                 
-                if (data.success && data.total_duration_formatted) {
+                if (data.success) {
                     // Hiển thị tổng thời lượng
                     const totalDurationElement = document.getElementById('totalDuration');
                     if (totalDurationElement) {
-                        totalDurationElement.textContent = data.total_duration_formatted;
+                        totalDurationElement.textContent = data.total_duration_formatted || '00:00:00';
+                    }
+                    
+                    // Kiểm tra giới hạn 1 giờ (3600 giây) cho free tier
+                    const totalSeconds = data.total_duration_seconds || 0;
+                    const limitSeconds = 3600; // 1 giờ = 3600 giây
+                    const remainingSeconds = Math.max(0, limitSeconds - totalSeconds);
+                    const remainingFormatted = formatDuration(remainingSeconds);
+                    
+                    // Hiển thị cảnh báo nếu đã đạt hoặc gần đạt giới hạn
+                    const warningElement = document.getElementById('durationWarning');
+                    if (warningElement) {
+                        if (totalSeconds >= limitSeconds) {
+                            warningElement.textContent = '⚠️ You have reached the 1 hour limit';
+                            warningElement.style.display = 'block';
+                            warningElement.className = 'duration-warning error';
+                            // Disable start button nếu đã đạt giới hạn
+                            const startBtn = document.getElementById('startBtn');
+                            if (startBtn) {
+                                startBtn.disabled = true;
+                                startBtn.title = 'You have reached the 1 hour recording limit';
+                            }
+                        } else if (totalSeconds >= limitSeconds * 0.9) {
+                            // Cảnh báo khi còn 10% (6 phút)
+                            warningElement.textContent = `⚠️ Warning: Only ${remainingFormatted} remaining (1 hour limit)`;
+                            warningElement.style.display = 'block';
+                            warningElement.className = 'duration-warning warning';
+                        } else {
+                            warningElement.style.display = 'none';
+                        }
                     }
                 }
             } catch (error) {
@@ -729,12 +781,18 @@
             }
         }
         
-        // Load tổng thời lượng sau khi có userId
-        setTimeout(() => {
-            if (userId) {
-                loadTotalDuration();
+        function formatDuration(seconds) {
+            const hours = Math.floor(seconds / 3600);
+            const minutes = Math.floor((seconds % 3600) / 60);
+            const secs = Math.floor(seconds % 60);
+            if (hours > 0) {
+                return `${hours}:${minutes.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
             }
-        }, 500);
+            return `${minutes}:${secs.toString().padStart(2, '0')}`;
+        }
+        
+        // Load tổng thời lượng ngay khi page load
+        loadTotalDuration();
 
         // Elements
         const faceInput = document.getElementById('faceInput');
@@ -904,6 +962,13 @@
                 if (data.type === 'frame') {
                     displayFrame(data.frame);
                     updateStats(data.timestamp, data.recording_duration);
+                    
+                    // Kiểm tra nếu vượt quá giới hạn thời lượng
+                    if (data.duration_limit_exceeded) {
+                        showError('You have reached the 1 hour recording limit. Recording stopped.');
+                        stopCamera();
+                        loadTotalDuration(); // Refresh tổng thời lượng
+                    }
                 } else if (data.type === 'room_created') {
                     // Display stream watch link
                     const watchUrl = window.location.origin + data.watch_url;

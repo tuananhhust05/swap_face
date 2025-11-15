@@ -1063,13 +1063,50 @@ async def websocket_video(websocket: WebSocket):
                         if start_time:
                             recording_duration = time.time() - start_time  # Thời lượng tính bằng giây
                     
+                    # Kiểm tra giới hạn 1 giờ (3600 giây) cho free tier
+                    # Tính tổng thời lượng đã ghi + thời lượng đang recording
+                    total_duration_exceeded = False
+                    if user_id:
+                        try:
+                            user_folder = os.path.join(VIDEO_RECORDS_DIR, user_id)
+                            if os.path.exists(user_folder):
+                                total_duration = 0.0
+                                for filename in os.listdir(user_folder):
+                                    if filename.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+                                        file_path = os.path.join(user_folder, filename)
+                                        if os.path.isfile(file_path):
+                                            duration = get_video_duration(file_path)
+                                            total_duration += duration
+                                
+                                # Thêm thời lượng đang recording
+                                total_duration += recording_duration
+                                
+                                # Kiểm tra nếu vượt quá 1 giờ (3600 giây)
+                                if total_duration >= 3600:
+                                    total_duration_exceeded = True
+                                    # Dừng recording nếu vượt quá giới hạn
+                                    if video_writer and video_writer.isOpened():
+                                        video_writer.release()
+                                        if connection_id in active_recordings:
+                                            active_recordings[connection_id]["video_writer"] = None
+                        except Exception as e:
+                            print(f"Error checking duration limit: {e}")
+                    
                     # Gửi frame đã swap về client TRƯỚC (không bị block bởi broadcast)
                     await websocket.send_json({
                         "type": "frame",
                         "frame": swapped_base64,
                         "timestamp": timestamp,
-                        "recording_duration": round(recording_duration, 1)  # Làm tròn 1 chữ số thập phân
+                        "recording_duration": round(recording_duration, 1),  # Làm tròn 1 chữ số thập phân
+                        "duration_limit_exceeded": total_duration_exceeded  # Thông báo nếu vượt quá giới hạn
                     })
+                    
+                    # Nếu vượt quá giới hạn, gửi cảnh báo
+                    if total_duration_exceeded:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "You have reached the 1 hour recording limit. Recording stopped."
+                        })
                     
                     # Broadcast frame đến viewers SAU (async, không block stream gốc)
                     # Tách ra để không làm chậm stream gốc
