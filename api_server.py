@@ -6,7 +6,7 @@ Chạy ở chế độ public trên port 5349
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, HTMLResponse
+from fastapi.responses import JSONResponse, FileResponse, StreamingResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 from typing import Optional, List, Dict
@@ -106,8 +106,26 @@ def decode_jwt_simple(token: str) -> Optional[Dict]:
 
 @app.get("/")
 async def root(request: Request):
-    """Root endpoint - Serve web interface"""
-    # Client sẽ decode token và gửi user_id qua WebSocket hoặc API
+    """Root endpoint - Serve web interface với kiểm tra token"""
+    # Kiểm tra token từ query params
+    token = request.query_params.get("token")
+    
+    if not token:
+        # Không có token, redirect đến vtoobe.com
+        return RedirectResponse(url="https://vtoobe.com", status_code=302)
+    
+    # Kiểm tra token hợp lệ
+    decoded = decode_jwt_simple(token)
+    if not decoded:
+        # Token không hợp lệ, redirect đến vtoobe.com
+        return RedirectResponse(url="https://vtoobe.com", status_code=302)
+    
+    user_id = decoded.get("user_id") or decoded.get("sub")
+    if not user_id:
+        # Không có user_id trong token, redirect đến vtoobe.com
+        return RedirectResponse(url="https://vtoobe.com", status_code=302)
+    
+    # Token hợp lệ, serve web interface
     html_path = os.path.join(static_dir, "index.html")
     if os.path.exists(html_path):
         return FileResponse(html_path)
@@ -627,6 +645,93 @@ async def watch_stream(room_id: str):
     )
 
 
+def get_video_duration(video_path: str) -> float:
+    """
+    Lấy duration của video file (tính bằng giây)
+    Sử dụng OpenCV để đọc video
+    """
+    try:
+        cap = cv2.VideoCapture(video_path)
+        if not cap.isOpened():
+            return 0.0
+        
+        # Lấy FPS và frame count
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        
+        cap.release()
+        
+        if fps > 0:
+            duration = frame_count / fps
+            return duration
+        return 0.0
+    except Exception as e:
+        print(f"Error getting video duration for {video_path}: {e}")
+        return 0.0
+
+
+@app.get("/api/total-duration")
+async def get_total_duration(token: str = Query(..., description="JWT Token")):
+    """
+    Tính tổng thời lượng video của user từ folder video_records/{user_id}/
+    """
+    try:
+        # Decode token để lấy user_id
+        decoded = decode_jwt_simple(token)
+        if not decoded:
+            raise HTTPException(status_code=400, detail="Invalid token")
+        
+        user_id = decoded.get("user_id") or decoded.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=400, detail="User ID not found in token")
+        
+        # Đường dẫn folder của user
+        user_folder = os.path.join(VIDEO_RECORDS_DIR, user_id)
+        
+        if not os.path.exists(user_folder):
+            return {
+                "success": True,
+                "user_id": user_id,
+                "total_duration_seconds": 0,
+                "total_duration_formatted": "00:00:00",
+                "video_count": 0
+            }
+        
+        # Tính tổng thời lượng từ tất cả video files
+        total_duration = 0.0
+        video_count = 0
+        
+        for filename in os.listdir(user_folder):
+            if filename.endswith(('.mp4', '.avi', '.mov', '.mkv', '.webm')):
+                file_path = os.path.join(user_folder, filename)
+                if os.path.isfile(file_path):
+                    duration = get_video_duration(file_path)
+                    total_duration += duration
+                    video_count += 1
+        
+        # Format thời lượng thành HH:MM:SS
+        hours = int(total_duration // 3600)
+        minutes = int((total_duration % 3600) // 60)
+        seconds = int(total_duration % 60)
+        formatted_duration = f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+        
+        return {
+            "success": True,
+            "user_id": user_id,
+            "total_duration_seconds": round(total_duration, 2),
+            "total_duration_formatted": formatted_duration,
+            "video_count": video_count
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_total_duration: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error getting total duration: {str(e)}")
+
+
 @app.get("/api/videos")
 async def get_user_videos(token: str = Query(..., description="JWT Token")):
     """
@@ -904,6 +1009,7 @@ async def websocket_video(websocket: WebSocket):
                                 break
                         
                         # Lưu thông tin recording
+                        start_time = time.time()  # Thời gian bắt đầu recording
                         active_recordings[connection_id] = {
                             "video_writer": video_writer,
                             "user_id": user_id,
@@ -911,7 +1017,9 @@ async def websocket_video(websocket: WebSocket):
                             "width": frame_width,
                             "height": frame_height,
                             "fps": fps,
-                            "room_id": room_id_for_recording  # Lưu room_id vào đây
+                            "room_id": room_id_for_recording,  # Lưu room_id vào đây
+                            "start_time": start_time,  # Thời gian bắt đầu recording
+                            "frame_count": 0  # Đếm số frame đã ghi
                         }
                         print(f"Started recording for connection {connection_id}, user: {user_id}, room: {room_id_for_recording}")
                     
@@ -925,6 +1033,9 @@ async def websocket_video(websocket: WebSocket):
                     # Ghi frame vào video nếu đang recording
                     if video_writer and video_writer.isOpened():
                         video_writer.write(swapped_frame)
+                        # Tăng frame count để tính thời lượng
+                        if connection_id in active_recordings:
+                            active_recordings[connection_id]["frame_count"] = active_recordings[connection_id].get("frame_count", 0) + 1
                     
                     # Lưu frame vào stream room để người khác xem
                     # Tìm room_id từ active_recordings hoặc từ stream_rooms
@@ -944,11 +1055,20 @@ async def websocket_video(websocket: WebSocket):
                     frame_bytes = buffer.tobytes()  # JPEG bytes
                     swapped_base64 = base64.b64encode(frame_bytes).decode('utf-8')
                     
+                    # Tính thời lượng video đã ghi (nếu đang recording)
+                    recording_duration = 0
+                    if connection_id in active_recordings:
+                        recording_info = active_recordings[connection_id]
+                        start_time = recording_info.get("start_time")
+                        if start_time:
+                            recording_duration = time.time() - start_time  # Thời lượng tính bằng giây
+                    
                     # Gửi frame đã swap về client TRƯỚC (không bị block bởi broadcast)
                     await websocket.send_json({
                         "type": "frame",
                         "frame": swapped_base64,
-                        "timestamp": timestamp
+                        "timestamp": timestamp,
+                        "recording_duration": round(recording_duration, 1)  # Làm tròn 1 chữ số thập phân
                     })
                     
                     # Broadcast frame đến viewers SAU (async, không block stream gốc)

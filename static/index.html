@@ -348,8 +348,20 @@
 
         .stats {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 16px;
+        }
+        
+        @media (max-width: 1024px) {
+            .stats {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+        
+        @media (max-width: 640px) {
+            .stats {
+                grid-template-columns: 1fr;
+            }
         }
 
         .stat-card {
@@ -603,8 +615,12 @@
                     <div class="stat-value" id="latency">0ms</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-label">Frames</div>
-                    <div class="stat-value" id="frames">0</div>
+                    <div class="stat-label">Recording Time</div>
+                    <div class="stat-value" id="recordingTime">00:00</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Total Duration</div>
+                    <div class="stat-value" id="totalDuration">00:00:00</div>
                 </div>
             </div>
         </div>
@@ -648,7 +664,8 @@
             fps: 0,
             latency: 0,
             frames: 0,
-            lastFrameTime: 0
+            lastFrameTime: 0,
+            recordingDuration: 0  // Thời lượng recording (giây)
         };
 
         // Decode JWT token to get user_id (decode on client side)
@@ -683,6 +700,41 @@
 
         // Gọi hàm này khi page load
         getUserIdFromToken();
+        
+        // Load tổng thời lượng video khi có userId
+        async function loadTotalDuration() {
+            if (!userId) {
+                return;
+            }
+            
+            const urlParams = new URLSearchParams(window.location.search);
+            const token = urlParams.get('token');
+            if (!token) {
+                return;
+            }
+            
+            try {
+                const response = await fetch(`/api/total-duration?token=${encodeURIComponent(token)}`);
+                const data = await response.json();
+                
+                if (data.success && data.total_duration_formatted) {
+                    // Hiển thị tổng thời lượng
+                    const totalDurationElement = document.getElementById('totalDuration');
+                    if (totalDurationElement) {
+                        totalDurationElement.textContent = data.total_duration_formatted;
+                    }
+                }
+            } catch (error) {
+                console.error('Error loading total duration:', error);
+            }
+        }
+        
+        // Load tổng thời lượng sau khi có userId
+        setTimeout(() => {
+            if (userId) {
+                loadTotalDuration();
+            }
+        }, 500);
 
         // Elements
         const faceInput = document.getElementById('faceInput');
@@ -851,7 +903,7 @@
                 const data = JSON.parse(event.data);
                 if (data.type === 'frame') {
                     displayFrame(data.frame);
-                    updateStats(data.timestamp);
+                    updateStats(data.timestamp, data.recording_duration);
                 } else if (data.type === 'room_created') {
                     // Display stream watch link
                     const watchUrl = window.location.origin + data.watch_url;
@@ -879,7 +931,14 @@
             img.src = 'data:image/jpeg;base64,' + base64Frame;
         }
 
-        function updateStats(timestamp) {
+        function formatTime(seconds) {
+            if (!seconds || seconds < 0) return '00:00';
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+        }
+
+        function updateStats(timestamp, recordingDuration) {
             stats.frames++;
             if (stats.lastFrameTime > 0) {
                 const frameTime = Date.now() - stats.lastFrameTime;
@@ -890,9 +949,14 @@
             }
             stats.lastFrameTime = Date.now();
 
+            // Cập nhật thời lượng recording nếu có
+            if (recordingDuration !== undefined && recordingDuration !== null) {
+                stats.recordingDuration = recordingDuration;
+            }
+
             document.getElementById('fps').textContent = stats.fps;
             document.getElementById('latency').textContent = stats.latency + 'ms';
-            document.getElementById('frames').textContent = stats.frames;
+            document.getElementById('recordingTime').textContent = formatTime(stats.recordingDuration);
         }
 
         function captureFrame() {
@@ -979,10 +1043,10 @@
             startBtn.disabled = false;
             stopBtn.disabled = true;
 
-            stats = { fps: 0, latency: 0, frames: 0, lastFrameTime: 0 };
+            stats = { fps: 0, latency: 0, frames: 0, lastFrameTime: 0, recordingDuration: 0 };
             document.getElementById('fps').textContent = '0';
             document.getElementById('latency').textContent = '0ms';
-            document.getElementById('frames').textContent = '0';
+            document.getElementById('recordingTime').textContent = '00:00';
 
             // Call API to save video if recording and has user_id
             if (isRecording && userId) {
@@ -997,6 +1061,9 @@
                         updateStatus('Video saved!', 'connected');
                         showError(`Video saved successfully! URL: ${data.video_url}`);
                         console.log('Video saved:', data.video_url);
+                        
+                        // Refresh tổng thời lượng sau khi save video
+                        loadTotalDuration();
                     } else {
                         updateStatus('Error saving video', 'disconnected');
                         showError('Failed to save video: ' + (data.message || 'Unknown error'));
