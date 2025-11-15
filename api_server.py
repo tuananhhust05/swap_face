@@ -218,7 +218,7 @@ async def clear_faces():
 @app.get("/view/{room_id}")
 async def view_stream_page(room_id: str, request: Request):
     """
-    Endpoint để hiển thị trang viewer với giao diện đẹp và nút chia sẻ
+    Endpoint để hiển thị trang viewer với giao diện đẹp (không có nút share - share ở trang streamer)
     """
     # Kiểm tra room có tồn tại không
     if room_id not in stream_rooms:
@@ -506,68 +506,9 @@ async def view_stream_page(room_id: str, request: Request):
                     <img id="streamImage" src="/watch/{room_id}" alt="Live Stream">
                 </div>
             </div>
-            
-            <div class="share-section">
-                <h2 class="share-title">Share this stream</h2>
-                <div class="share-buttons">
-                    <a href="https://www.facebook.com/sharer/sharer.php?u={share_url}" 
-                       target="_blank" 
-                       class="share-btn share-btn-facebook"
-                       onclick="window.open(this.href, 'facebook-share', 'width=600,height=400'); return false;">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M24 12.073c0-6.627-5.373-12-12-12s-12 5.373-12 12c0 5.99 4.388 10.954 10.125 11.854v-8.385H7.078v-3.47h3.047V9.43c0-3.007 1.792-4.669 4.533-4.669 1.312 0 2.686.235 2.686.235v2.953H15.83c-1.491 0-1.956.925-1.956 1.874v2.25h3.328l-.532 3.47h-2.796v8.385C19.612 23.027 24 18.062 24 12.073z"/>
-                        </svg>
-                        Share on Facebook
-                    </a>
-                    
-                    <a href="https://twitter.com/intent/tweet?url={share_url}&text=Watch%20this%20amazing%20live%20face%20swap%20stream!" 
-                       target="_blank" 
-                       class="share-btn share-btn-twitter"
-                       onclick="window.open(this.href, 'twitter-share', 'width=600,height=400'); return false;">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H5.08l4.793 6.588h.002L18.244 2.25z"/>
-                        </svg>
-                        Share on X
-                    </a>
-                    
-                    <a href="https://www.tiktok.com/upload?lang=en" 
-                       target="_blank" 
-                       class="share-btn share-btn-tiktok"
-                       onclick="window.open(this.href, 'tiktok-share', 'width=600,height=400'); return false;">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
-                            <path d="M19.59 6.69a4.83 4.83 0 0 1-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 0 1-5.2 1.74 2.89 2.89 0 0 1 2.31-4.64 2.93 2.93 0 0 1 .88.13V9.4a6.84 6.84 0 0 0-1-.05A6.33 6.33 0 0 0 5 20.1a6.34 6.34 0 0 0 10.86-4.43v-7a8.16 8.16 0 0 0 4.77 1.52v-3.4a4.85 4.85 0 0 1-1-.1z"/>
-                        </svg>
-                        Share on TikTok
-                    </a>
-                    
-                    <button class="share-btn share-btn-copy" onclick="copyStreamLink()">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
-                            <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
-                        </svg>
-                        Copy Link
-                    </button>
-                </div>
-                <div class="copy-success" id="copySuccess">✓ Link copied to clipboard!</div>
-            </div>
         </div>
         
         <script>
-            const streamUrl = '{share_url}';
-            
-            function copyStreamLink() {{
-                navigator.clipboard.writeText(streamUrl).then(() => {{
-                    const success = document.getElementById('copySuccess');
-                    success.classList.add('show');
-                    setTimeout(() => {{
-                        success.classList.remove('show');
-                    }}, 3000);
-                }}).catch(err => {{
-                    console.error('Failed to copy:', err);
-                    alert('Failed to copy link. Please copy manually: ' + streamUrl);
-                }});
-            }}
-            
             // Handle stream image errors
             const streamImage = document.getElementById('streamImage');
             streamImage.onerror = function() {{
@@ -1003,34 +944,18 @@ async def websocket_video(websocket: WebSocket):
                     frame_bytes = buffer.tobytes()  # JPEG bytes
                     swapped_base64 = base64.b64encode(frame_bytes).decode('utf-8')
                     
-                    # Broadcast frame đã encode đến viewers ngay lập tức - Y HỆT STREAM GỐC
-                    # Frame được broadcast ngay sau khi swap, trước khi gửi về streamer
-                    # Tối ưu: encode một lần, share bytes cho tất cả viewers (không copy frame)
-                    if room_id_to_update and room_id_to_update in stream_rooms:
-                        try:
-                            room_info = stream_rooms[room_id_to_update]
-                            viewers = room_info.get("viewers", [])
-                            
-                            if len(viewers) > 0:
-                                # Lưu frame đã encode sẵn (shared cho tất cả viewers)
-                                room_info["last_encoded_frame"] = frame_bytes
-                                
-                                # Signal tất cả viewers có frame mới (non-blocking, real-time)
-                                # Mỗi viewer có event riêng, signal tất cả cùng lúc
-                                for viewer_event in viewers:
-                                    try:
-                                        viewer_event.set()  # Signal viewer này có frame mới
-                                    except:
-                                        pass  # Viewer đã disconnect, bỏ qua
-                        except Exception as e:
-                            print(f"Error broadcasting frame for room {room_id_to_update}: {e}")
-                    
-                    # Gửi frame đã swap về client
+                    # Gửi frame đã swap về client TRƯỚC (không bị block bởi broadcast)
                     await websocket.send_json({
                         "type": "frame",
                         "frame": swapped_base64,
                         "timestamp": timestamp
                     })
+                    
+                    # Broadcast frame đến viewers SAU (async, không block stream gốc)
+                    # Tách ra để không làm chậm stream gốc
+                    if room_id_to_update and room_id_to_update in stream_rooms:
+                        # Chạy broadcast trong background task để không block
+                        asyncio.create_task(broadcast_frame_to_viewers(room_id_to_update, frame_bytes))
                     
                 except Exception as e:
                     await websocket.send_json({
@@ -1078,6 +1003,32 @@ async def websocket_video(websocket: WebSocket):
                     room_info["deletion_time"] = time.time() + 30  # Xóa sau 30 giây
                     print(f"Marked room {room_id} for deletion (viewers: {viewers_count})")
                 break
+
+
+async def broadcast_frame_to_viewers(room_id: str, frame_bytes: bytes):
+    """
+    Broadcast frame đến viewers (async, không block stream gốc)
+    """
+    try:
+        if room_id not in stream_rooms:
+            return
+        
+        room_info = stream_rooms[room_id]
+        viewers = room_info.get("viewers", [])
+        
+        if len(viewers) > 0:
+            # Lưu frame đã encode sẵn (shared cho tất cả viewers)
+            room_info["last_encoded_frame"] = frame_bytes
+            
+            # Signal tất cả viewers có frame mới (non-blocking, real-time)
+            # Mỗi viewer có event riêng, signal tất cả cùng lúc
+            for viewer_event in viewers:
+                try:
+                    viewer_event.set()  # Signal viewer này có frame mới
+                except:
+                    pass  # Viewer đã disconnect, bỏ qua
+    except Exception as e:
+        print(f"Error broadcasting frame for room {room_id}: {e}")
 
 
 def process_frame_for_swap(frame):
