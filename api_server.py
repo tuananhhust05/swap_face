@@ -233,6 +233,52 @@ async def clear_faces():
     return {"success": True, "message": "All faces cleared"}
 
 
+@app.get("/api/active-streams")
+async def get_active_streams():
+    """
+    API endpoint để lấy danh sách các streams đang active
+    """
+    try:
+        active_streams = []
+        current_time = time.time()
+        
+        for room_id, room_info in stream_rooms.items():
+            # Skip rooms marked for deletion
+            if room_info.get("marked_for_deletion"):
+                deletion_time = room_info.get("deletion_time", 0)
+                if current_time > deletion_time:
+                    continue
+            
+            # Get last frame as base64 for thumbnail
+            last_frame_b64 = None
+            if room_info.get("last_encoded_frame"):
+                last_frame_b64 = base64.b64encode(room_info["last_encoded_frame"]).decode('utf-8')
+            
+            active_streams.append({
+                "room_id": room_id,
+                "created_at": room_info.get("created_at").isoformat() if room_info.get("created_at") else None,
+                "user_id": room_info.get("user_id"),
+                "viewers": len(room_info.get("viewers", [])),
+                "last_frame": last_frame_b64,
+                "title": f"Stream by User {room_info.get('user_id', 'Unknown')}",
+                "creator": f"User {room_info.get('user_id', 'Unknown')}"
+            })
+        
+        return {
+            "success": True,
+            "streams": active_streams,
+            "count": len(active_streams)
+        }
+    except Exception as e:
+        print(f"Error getting active streams: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "streams": [],
+            "count": 0
+        }
+
+
 @app.get("/view/{room_id}")
 async def view_stream_page(room_id: str, request: Request):
     """
