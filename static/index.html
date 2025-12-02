@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Vtoobe - Real-Time Face Swap</title>
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Roboto+Mono:wght@400;700&family=Orbitron:wght@700&family=Inter:wght@400;500;700&display=swap');
         
         * {
             margin: 0;
@@ -15,77 +15,177 @@
         }
 
         :root {
-            --apple-bg: #f5f5f7;
-            --apple-card: #ffffff;
-            --apple-text: #1d1d1f;
-            --apple-text-secondary: #86868b;
-            --apple-blue: #0071e3;
-            --apple-blue-hover: #0077ed;
-            --apple-border: #d2d2d7;
+            --background-color: #0a0a0f;
+            --screen-bg: #1a1520;
+            --primary-glow: #00e5ff;
+            --secondary-glow: #ff1493;
+            --accent-cyan: #00ffff;
+            --accent-pink: #ff69b4;
+            --warm-brown: #8b4513;
+            --dark-brown: #5d2f1e;
+            --text-primary: #ffffff;
+            --text-secondary: #e0e0e0;
+            --border-color: rgba(0, 229, 255, 0.3);
             --apple-success: #34c759;
             --apple-error: #ff3b30;
-            --apple-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
-            --apple-shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.12);
         }
 
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
-            background: var(--apple-bg);
-            color: var(--apple-text);
+            font-family: 'Inter', sans-serif;
+            background: linear-gradient(135deg, var(--background-color) 0%, #0f0520 100%);
+            color: var(--text-primary);
             min-height: 100vh;
             padding: 0;
             margin: 0;
             line-height: 1.5;
             -webkit-font-smoothing: antialiased;
             -moz-osx-font-smoothing: grayscale;
+            overscroll-behavior: none;
+        }
+
+        .font-mono { font-family: 'Roboto Mono', monospace; }
+        .font-orbitron { font-family: 'Orbitron', sans-serif; }
+
+        .main-layout {
+            display: flex;
+            width: 100%;
+            min-height: 100vh;
+        }
+
+        .sidebar {
+            width: 224px;
+            position: fixed;
+            top: 0;
+            left: 0;
+            height: 100vh;
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
+            padding: 12px;
+            display: flex;
+            flex-direction: column;
+            border-right: 2px solid var(--accent-cyan);
+            box-shadow: 2px 0 20px rgba(0, 229, 255, 0.2);
+            z-index: 100;
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 8px;
+            margin-bottom: 24px;
+        }
+
+        .sidebar-logo {
+            width: 40px;
+            height: 40px;
+            background: linear-gradient(45deg, var(--primary-glow), var(--secondary-glow));
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            color: white;
+            font-size: 18px;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.5);
+        }
+
+        .vtoobe-brand {
+            font-size: 1.5rem;
+            font-weight: bold;
+            background: linear-gradient(45deg, var(--primary-glow), var(--secondary-glow));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            text-shadow: 0 0 20px rgba(0, 229, 255, 0.5);
+            font-family: 'Orbitron', sans-serif;
+            letter-spacing: 2px;
+        }
+
+        .sidebar-nav {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .sidebar-item {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            padding: 10px 16px;
+            font-size: 14px;
+            font-weight: 500;
+            color: var(--accent-cyan);
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-decoration: none;
+        }
+
+        .sidebar-item:hover {
+            background: linear-gradient(to right, rgba(0, 229, 255, 0.1), rgba(255, 20, 147, 0.1));
+            color: var(--accent-cyan);
+            border: 1px solid rgba(0, 229, 255, 0.2);
+        }
+
+        .sidebar-item.active {
+            background: linear-gradient(to right, rgba(0, 229, 255, 0.2), rgba(255, 20, 147, 0.2));
+            color: var(--accent-cyan);
+            border: 1px solid rgba(0, 229, 255, 0.3);
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.2);
+        }
+
+        .main-content {
+            margin-left: 224px;
+            flex: 1;
+            padding: 16px;
         }
 
         .header {
-            background: var(--apple-card);
-            border-bottom: 1px solid var(--apple-border);
-            padding: 20px 0;
-            text-align: center;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-            backdrop-filter: blur(20px);
-            background: rgba(255, 255, 255, 0.8);
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
+            border-bottom: 2px solid rgba(0, 229, 255, 0.5);
+            padding: 12px 16px;
+            border-radius: 12px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
         }
 
         .logo {
-            font-size: 32px;
+            font-size: 24px;
             font-weight: 600;
-            letter-spacing: -0.5px;
-            color: var(--apple-text);
-            margin: 0;
+            background: linear-gradient(45deg, var(--primary-glow), var(--secondary-glow));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            font-family: 'Orbitron', sans-serif;
         }
 
         .tagline {
-            font-size: 14px;
-            color: var(--apple-text-secondary);
+            font-size: 12px;
+            color: var(--text-secondary);
             margin-top: 4px;
             font-weight: 400;
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1400px;
             margin: 0 auto;
-            padding: 40px 20px;
         }
 
         .upload-section {
-            background: var(--apple-card);
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
             border-radius: 18px;
-            padding: 60px 40px;
+            padding: 40px;
             text-align: center;
-            box-shadow: var(--apple-shadow);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 2px 4px rgba(0, 0, 0, 0.4);
             margin-bottom: 30px;
-            border: 1px solid var(--apple-border);
+            border: 2px solid var(--border-color);
         }
 
         .duration-progress-container {
-            background: rgba(0, 113, 227, 0.05);
-            border: 1px solid rgba(0, 113, 227, 0.2);
+            background: rgba(0, 229, 255, 0.05);
+            border: 1px solid rgba(0, 229, 255, 0.2);
             border-radius: 12px;
             padding: 20px;
             margin-bottom: 30px;
@@ -101,25 +201,26 @@
         }
 
         .duration-label {
-            color: var(--apple-text-secondary);
+            color: var(--text-secondary);
             font-weight: 500;
         }
 
         .duration-value {
-            color: var(--apple-text);
+            color: var(--text-primary);
             font-weight: 600;
             font-size: 18px;
+            text-shadow: 0 0 8px var(--primary-glow);
         }
 
         .duration-limit {
-            color: var(--apple-text-secondary);
+            color: var(--text-secondary);
             font-size: 15px;
         }
 
         .progress-bar-wrapper {
             width: 100%;
             height: 12px;
-            background: rgba(0, 113, 227, 0.1);
+            background: rgba(0, 229, 255, 0.1);
             border-radius: 6px;
             overflow: hidden;
             margin-bottom: 12px;
@@ -133,10 +234,11 @@
 
         .progress-fill {
             height: 100%;
-            background: linear-gradient(90deg, var(--apple-blue) 0%, #0077ed 100%);
+            background: linear-gradient(90deg, var(--primary-glow) 0%, var(--secondary-glow) 100%);
             border-radius: 6px;
             transition: width 0.3s ease;
             width: 0%;
+            box-shadow: 0 0 10px rgba(0, 229, 255, 0.5);
         }
 
         .progress-fill.warning {
@@ -178,29 +280,94 @@
             width: 80px;
             height: 80px;
             margin: 0 auto 24px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background: linear-gradient(135deg, var(--primary-glow), var(--secondary-glow));
             border-radius: 20px;
             display: flex;
             align-items: center;
             justify-content: center;
             font-size: 36px;
+            box-shadow: 0 0 25px rgba(0, 229, 255, 0.5);
         }
 
         .upload-section h2 {
             font-size: 28px;
             font-weight: 600;
             margin-bottom: 12px;
-            color: var(--apple-text);
+            color: var(--text-primary);
             letter-spacing: -0.3px;
+            text-shadow: 0 0 8px var(--primary-glow), 0 0 15px var(--accent-cyan);
         }
 
         .upload-section p {
             font-size: 17px;
-            color: var(--apple-text-secondary);
+            color: var(--text-secondary);
             margin-bottom: 32px;
             max-width: 500px;
             margin-left: auto;
             margin-right: auto;
+        }
+
+        .image-carousel {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 16px;
+            margin: 32px 0;
+            padding: 20px;
+            background: rgba(0, 0, 0, 0.3);
+            border-radius: 12px;
+            border: 1px solid var(--border-color);
+        }
+
+        .carousel-nav-btn {
+            background: rgba(0, 229, 255, 0.2);
+            border: 1px solid var(--primary-glow);
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--primary-glow);
+            cursor: pointer;
+            transition: all 0.2s ease;
+            backdrop-filter: blur(5px);
+            font-size: 20px;
+        }
+
+        .carousel-nav-btn:hover {
+            background: rgba(0, 229, 255, 0.4);
+            box-shadow: 0 0 10px var(--primary-glow);
+            transform: scale(1.1);
+        }
+
+        .image-preview-card {
+            width: 120px;
+            height: 120px;
+            border-radius: 12px;
+            border: 2px solid var(--primary-glow);
+            overflow: hidden;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.4);
+            position: relative;
+        }
+
+        .image-preview-card:hover {
+            transform: scale(1.1) rotate(3deg);
+            box-shadow: 0 0 25px var(--primary-glow), 0 0 35px var(--secondary-glow);
+            border-color: var(--secondary-glow);
+        }
+
+        .image-preview-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .image-preview-card.selected {
+            border-color: var(--secondary-glow);
+            box-shadow: 0 0 30px var(--secondary-glow);
         }
 
         .file-input-wrapper {
@@ -213,7 +380,7 @@
         .file-input-label {
             display: inline-block;
             padding: 14px 32px;
-            background: var(--apple-blue);
+            background: linear-gradient(135deg, var(--primary-glow), var(--secondary-glow));
             color: white;
             border-radius: 12px;
             cursor: pointer;
@@ -222,11 +389,12 @@
             transition: all 0.2s ease;
             width: 100%;
             text-align: center;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
         }
 
         .file-input-label:hover {
-            background: var(--apple-blue-hover);
             transform: translateY(-1px);
+            box-shadow: 0 0 30px rgba(0, 229, 255, 0.5);
         }
 
         .file-input-label:active {
@@ -301,6 +469,150 @@
             display: block;
         }
 
+        .tv-casing {
+            position: relative;
+            width: 100%;
+            display: flex;
+            flex-direction: column;
+            filter: drop-shadow(0 0 30px rgba(0,229,255,0.3));
+            margin-bottom: 24px;
+        }
+
+        .tv-antenna {
+            position: absolute;
+            top: -10px;
+            left: 50%;
+            width: 80px;
+            height: 80px;
+            transform: translateX(-50%);
+            z-index: -1;
+        }
+
+        .antenna-pole {
+            position: absolute;
+            bottom: 0;
+            left: 50%;
+            width: 4px;
+            height: 100px;
+            background: linear-gradient(#e0e0e0, #a0a0a0);
+            border-radius: 2px;
+            transform-origin: bottom center;
+            box-shadow: 1px -1px 3px rgba(0,0,0,0.5);
+            cursor: pointer;
+            transition: transform 0.3s ease;
+        }
+
+        .antenna-pole.left { transform: translateX(-2px) rotate(-25deg); }
+        .antenna-pole.right { transform: translateX(-2px) rotate(15deg); }
+
+        .antenna-base {
+            position: absolute;
+            bottom: -3px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 20px;
+            height: 8px;
+            background: #444;
+            border-radius: 2px;
+            border-bottom: 1px solid #222;
+        }
+
+        .tv-screen-container {
+            position: relative;
+            background: #000;
+            border-radius: 2rem;
+            overflow: hidden;
+            box-shadow: 
+              0 0 25px rgba(0, 229, 255, 0.5),
+              0 0 50px rgba(255, 20, 147, 0.3),
+              inset 0 0 20px rgba(0,0,0,1);
+            border: 4px solid #333;
+            border-bottom: 8px solid #444;
+            padding: 2.5%;
+            width: 100%;
+            aspect-ratio: 16/9;
+        }
+
+        .content-wrapper {
+            position: relative;
+            z-index: 4;
+            height: 100%;
+            width: 100%;
+            background: linear-gradient(135deg, #0a0a0f 0%, #1a1520 100%);
+            border-radius: 1rem;
+            overflow: hidden;
+            transition: opacity 0.5s ease-in-out;
+            box-shadow: inset 0 0 80px 20px rgba(0,0,0,0.7);
+        }
+
+        .screen-glare {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: 
+              radial-gradient(ellipse 80% 120% at 20% -10%, rgba(0,255,255,0.1), transparent),
+              radial-gradient(ellipse 80% 120% at 85% 110%, rgba(255,105,180,0.08), transparent);
+            z-index: 5;
+            pointer-events: none;
+        }
+
+        .tv-controls {
+            width: 100%;
+            min-height: 80px;
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
+            border-radius: 0 0 1rem 1rem;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0.75rem 1rem;
+            box-shadow: 0 8px 15px rgba(0,0,0,0.5), inset 0 2px 4px rgba(0,0,0,0.4);
+            border: 2px solid #222;
+            border-top: none;
+        }
+
+        .control-button {
+            width: 40px;
+            height: 40px;
+            background: #333;
+            border-radius: 50%;
+            border: 2px solid #111;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--secondary-glow);
+            box-shadow: inset 0 2px 4px rgba(0,0,0,0.6);
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .control-button:active, .control-button.active {
+            transform: scale(0.95);
+            box-shadow: inset 0 3px 6px rgba(0,0,0,0.8), 0 0 10px var(--primary-glow);
+            color: var(--primary-glow);
+        }
+
+        .flex {
+            display: flex;
+        }
+
+        .items-center {
+            align-items: center;
+        }
+
+        .gap-2 {
+            gap: 8px;
+        }
+
+        .neon-text {
+            text-shadow: 
+                0 0 8px var(--primary-glow),
+                0 0 15px var(--accent-cyan),
+                0 0 20px var(--accent-pink);
+        }
+
         @keyframes fadeIn {
             from {
                 opacity: 0;
@@ -313,12 +625,12 @@
         }
 
         .status-card {
-            background: var(--apple-card);
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
             border-radius: 18px;
             padding: 20px;
             margin-bottom: 24px;
-            box-shadow: var(--apple-shadow);
-            border: 1px solid var(--apple-border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 2px solid var(--border-color);
         }
 
         .status-indicator {
@@ -369,23 +681,25 @@
         }
 
         .btn-primary {
-            background: var(--apple-blue);
+            background: linear-gradient(135deg, var(--primary-glow), var(--secondary-glow));
             color: white;
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.3);
         }
 
         .btn-primary:hover:not(:disabled) {
-            background: var(--apple-blue-hover);
             transform: translateY(-1px);
+            box-shadow: 0 0 30px rgba(0, 229, 255, 0.5);
         }
 
         .btn-secondary {
-            background: var(--apple-text);
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
             color: white;
+            border: 1px solid var(--border-color);
         }
 
         .btn-secondary:hover:not(:disabled) {
-            background: #333;
             transform: translateY(-1px);
+            box-shadow: 0 0 15px rgba(0, 229, 255, 0.3);
         }
 
         .btn:disabled {
@@ -437,6 +751,13 @@
             object-fit: cover;
         }
 
+        #remoteCanvas {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            background: #000;
+        }
+
         .stats {
             display: grid;
             grid-template-columns: repeat(4, 1fr);
@@ -456,17 +777,17 @@
         }
 
         .stat-card {
-            background: var(--apple-card);
+            background: linear-gradient(135deg, var(--warm-brown), var(--dark-brown));
             border-radius: 18px;
             padding: 24px;
             text-align: center;
-            box-shadow: var(--apple-shadow);
-            border: 1px solid var(--apple-border);
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 2px solid var(--border-color);
         }
 
         .stat-label {
             font-size: 13px;
-            color: var(--apple-text-secondary);
+            color: var(--text-secondary);
             margin-bottom: 8px;
             font-weight: 500;
             text-transform: uppercase;
@@ -476,8 +797,9 @@
         .stat-value {
             font-size: 32px;
             font-weight: 600;
-            color: var(--apple-text);
+            color: var(--text-primary);
             letter-spacing: -1px;
+            text-shadow: 0 0 8px var(--primary-glow);
         }
 
         .error-message {
@@ -489,6 +811,7 @@
             display: none;
             border: 1px solid rgba(255, 59, 48, 0.2);
             font-size: 15px;
+            text-shadow: 0 0 8px rgba(255, 59, 48, 0.5);
         }
 
         .duration-warning {
@@ -517,13 +840,13 @@
         }
 
         .stream-link-box {
-            background: linear-gradient(135deg, rgba(0, 113, 227, 0.05) 0%, rgba(0, 113, 227, 0.1) 100%);
-            border: 1px solid rgba(0, 113, 227, 0.2);
+            background: linear-gradient(135deg, rgba(0, 229, 255, 0.05) 0%, rgba(255, 20, 147, 0.1) 100%);
+            border: 2px solid var(--border-color);
             border-radius: 20px;
             padding: 32px;
             margin: 30px 0;
             display: none;
-            box-shadow: 0 4px 20px rgba(0, 113, 227, 0.08);
+            box-shadow: 0 4px 20px rgba(0, 229, 255, 0.2);
             backdrop-filter: blur(10px);
         }
 
@@ -545,13 +868,14 @@
 
         .stream-link-title {
             font-weight: 600;
-            color: var(--apple-text);
+            color: var(--text-primary);
             margin-bottom: 20px;
             font-size: 18px;
             display: flex;
             align-items: center;
             gap: 10px;
             letter-spacing: -0.3px;
+            text-shadow: 0 0 8px var(--primary-glow);
         }
 
         .stream-link-title::before {
@@ -560,16 +884,16 @@
         }
 
         .stream-link-url {
-            background: var(--apple-card);
+            background: rgba(0, 0, 0, 0.3);
             padding: 16px 20px;
             border-radius: 12px;
-            font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Roboto Mono', monospace;
+            font-family: 'Roboto Mono', monospace;
             font-size: 13px;
             word-break: break-all;
             margin-bottom: 24px;
-            border: 1px solid var(--apple-border);
-            color: var(--apple-text);
-            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.04);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
             line-height: 1.6;
         }
 
@@ -664,7 +988,8 @@
             margin-top: 24px;
             max-width: 200px;
             border-radius: 12px;
-            box-shadow: var(--apple-shadow);
+            box-shadow: 0 0 20px rgba(0, 229, 255, 0.4);
+            border: 2px solid var(--primary-glow);
             display: none;
         }
 
@@ -675,12 +1000,39 @@
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1 class="logo">Vtoobe</h1>
-        <p class="tagline">Real-Time Face Swap Technology</p>
-    </div>
+    <div class="main-layout">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">V</div>
+                <span class="vtoobe-brand">Vtoobe</span>
+            </div>
+            <nav class="sidebar-nav">
+                <a href="#" class="sidebar-item active">
+                    <span>🏠</span>
+                    <span>Home</span>
+                </a>
+                <a href="#" class="sidebar-item">
+                    <span>📺</span>
+                    <span>Browse Streams</span>
+                </a>
+                <a href="#" class="sidebar-item">
+                    <span>👥</span>
+                    <span>Community</span>
+                </a>
+            </nav>
+        </aside>
 
-    <div class="container">
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="header">
+                <div>
+                    <h1 class="logo">Vtoobe</h1>
+                    <p class="tagline">Real-Time Face Swap Technology</p>
+                </div>
+            </div>
+
+            <div class="container">
         <!-- Upload Section -->
         <div class="upload-section" id="uploadSection">
             <!-- Total Duration Progress Bar -->
@@ -699,8 +1051,17 @@
             </div>
             
             <div class="upload-icon">📤</div>
-            <h2>Upload Face Image</h2>
-            <p>Select an image containing the face you want to use for face swapping. Make sure the face is clear and well-lit.</p>
+            <h2>Select Face Image</h2>
+            <p>Choose an image containing the face you want to use for face swapping. Make sure the face is clear and well-lit.</p>
+            
+            <!-- Image Carousel Style Selection -->
+            <div class="image-carousel" id="imageCarousel" style="display: none;">
+                <button class="carousel-nav-btn" id="prevImageBtn">‹</button>
+                <div class="image-preview-card" id="selectedImageCard">
+                    <img id="carouselPreviewImage" src="" alt="Selected Image">
+                </div>
+                <button class="carousel-nav-btn" id="nextImageBtn">›</button>
+            </div>
             
             <div class="file-input-wrapper">
                 <label for="faceInput" class="file-input-label" id="faceInputLabel">
@@ -722,17 +1083,40 @@
                 </div>
             </div>
 
-            <div class="controls">
-                <button class="btn btn-primary" id="startBtn">Start Camera</button>
-                <button class="btn btn-secondary" id="stopBtn" disabled>Stop Camera</button>
+            <!-- TV Style Interface -->
+            <div class="tv-casing">
+                <div class="tv-antenna">
+                    <div class="antenna-pole left"></div>
+                    <div class="antenna-pole right"></div>
+                    <div class="antenna-base"></div>
+                </div>
+                <div class="tv-screen-container">
+                    <div class="content-wrapper">
+                        <div class="screen-glare"></div>
+                        <div class="video-container" style="grid-template-columns: 1fr; height: 100%; padding: 1rem;">
+                            <div class="video-box" data-label="Live Stream" style="height: 100%;">
+                                <canvas id="remoteCanvas"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="tv-controls">
+                    <div class="flex items-center gap-2">
+                        <div class="control-button" id="powerBtn" title="Power">
+                            ⚡
+                        </div>
+                        <div class="vtoobe-brand" style="font-size: 0.875rem; margin-left: 8px;">VTOOBE</div>
+                    </div>
+                    <div class="controls" style="margin: 0;">
+                        <button class="btn btn-primary" id="startBtn">Start Camera</button>
+                        <button class="btn btn-secondary" id="stopBtn" disabled>Stop Camera</button>
+                    </div>
+                </div>
             </div>
 
-            <div class="video-container">
+            <div class="video-container" style="display: none;">
                 <div class="video-box" data-label="Original Camera">
                     <video id="localVideo" autoplay playsinline></video>
-                </div>
-                <div class="video-box" data-label="Swapped Face">
-                    <canvas id="remoteCanvas"></canvas>
                 </div>
             </div>
 
@@ -784,6 +1168,7 @@
                 </a>
             </div>
         </div>
+        </main>
     </div>
 
     <script>
@@ -959,8 +1344,23 @@
         const errorMessage = document.getElementById('errorMessage');
 
         const ctx = remoteCanvas.getContext('2d');
-        remoteCanvas.width = 640;
-        remoteCanvas.height = 480;
+        // Set canvas size to match TV screen aspect ratio (16:9)
+        function updateCanvasSize() {
+            const tvScreen = document.querySelector('.tv-screen-container');
+            if (tvScreen) {
+                const rect = tvScreen.getBoundingClientRect();
+                const padding = rect.width * 0.025; // 2.5% padding
+                remoteCanvas.width = (rect.width - padding * 2) * 0.95;
+                remoteCanvas.height = (rect.height - padding * 2) * 0.95;
+            } else {
+                remoteCanvas.width = 640;
+                remoteCanvas.height = 480;
+            }
+        }
+        
+        // Initialize canvas size
+        updateCanvasSize();
+        window.addEventListener('resize', updateCanvasSize);
 
         // File input change - Auto upload when file selected
         faceInput.addEventListener('change', async (e) => {
@@ -975,6 +1375,15 @@
             reader.onload = (e) => {
                 previewImage.src = e.target.result;
                 previewImage.classList.add('show');
+                
+                // Show image in carousel
+                const carouselPreview = document.getElementById('carouselPreviewImage');
+                const imageCarousel = document.getElementById('imageCarousel');
+                if (carouselPreview && imageCarousel) {
+                    carouselPreview.src = e.target.result;
+                    imageCarousel.style.display = 'flex';
+                    document.getElementById('selectedImageCard').classList.add('selected');
+                }
             };
             reader.readAsDataURL(file);
 
@@ -1140,7 +1549,15 @@
         function displayFrame(base64Frame) {
             const img = new Image();
             img.onload = () => {
-                ctx.drawImage(img, 0, 0, remoteCanvas.width, remoteCanvas.height);
+                // Update canvas size if needed
+                updateCanvasSize();
+                // Draw image to fill canvas while maintaining aspect ratio
+                ctx.fillStyle = '#000';
+                ctx.fillRect(0, 0, remoteCanvas.width, remoteCanvas.height);
+                const scale = Math.min(remoteCanvas.width / img.width, remoteCanvas.height / img.height);
+                const x = (remoteCanvas.width - img.width * scale) / 2;
+                const y = (remoteCanvas.height - img.height * scale) / 2;
+                ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
             };
             img.src = 'data:image/jpeg;base64,' + base64Frame;
         }
